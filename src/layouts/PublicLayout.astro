@@ -1,0 +1,278 @@
+---
+/**
+ * PublicLayout - Layout for public landing pages (/[slug])
+ *
+ * Renders the self-hoster-facing LP with:
+ * - Auto-generated meta tags (title / description / OGP / Apple Touch Icon)
+ * - Tracking tags (GTM, GA4, Clarity, Meta Pixel)
+ * - LP-specific max-width container
+ * - LP content via <slot />
+ *
+ * No authentication required (public access).
+ */
+
+import '../styles/global.css';
+import { sanitizeCustomHead } from '../lib/sanitize-head';
+
+interface TrackingTagsProp {
+  gtmId?: string | null;
+  ga4Id?: string | null;
+  clarityId?: string | null;
+  metaPixelId?: string | null;
+  customHead?: string | null;
+}
+
+interface SiteMetaProp {
+  faviconUrl?: string | null;
+  appleTouchIconUrl?: string | null;
+  ogpDefaultImageUrl?: string | null;
+}
+
+interface Props {
+  title: string;
+  description?: string;
+  faviconUrl?: string;
+  ogpImageUrl?: string;
+  ogpTitle?: string;
+  ogpDescription?: string;
+  appleTouchIconUrl?: string;
+  /**
+   * Suppress search-engine indexing. When true the page emits
+   * <meta name="robots" content="noindex,nofollow">. Used by both
+   * the per-LP toggle (LpMetaPanel) and the workers.dev forced-
+   * noindex path — callers OR them together before passing the
+   * result in.
+   */
+  noindex?: boolean;
+  maxWidth?: number;
+  /** Hex color painted on the body around the centred LP. Defaults to white. */
+  backgroundColor?: string | null;
+  /**
+   * Decoration around the centred LP body so it stands out from
+   * the background colour. 'line' draws thin vertical edges,
+   * 'shadow' applies a subtle drop shadow. null / 'none' = bare.
+   */
+  frameStyle?: 'line' | 'shadow' | 'none' | null;
+  publicUrl?: string;
+  tracking?: TrackingTagsProp;
+  siteMeta?: SiteMetaProp;
+  /**
+   * Pixel reservation for fixed bars (CountdownBar / Scarcity bar) so
+   * the LP content isn't covered. Pass 0 to disable.
+   */
+  stickyTopHeight?: number;
+  stickyBottomHeight?: number;
+  /**
+   * Active A/B variant. When set, an inline script pushes
+   * `{ event: 'ab_variant', parentId, bucket, label }` to the GTM
+   * dataLayer so analytics can split metrics by bucket.
+   */
+  abVariant?: {
+    parentId: string;
+    bucket: string;
+    label: string;
+  };
+}
+
+const {
+  title,
+  description = '',
+  faviconUrl,
+  ogpImageUrl,
+  ogpTitle,
+  ogpDescription,
+  appleTouchIconUrl,
+  noindex = false,
+  maxWidth = 750,
+  backgroundColor,
+  frameStyle,
+  publicUrl,
+  tracking,
+  siteMeta,
+  stickyTopHeight = 0,
+  stickyBottomHeight = 0,
+  abVariant,
+} = Astro.props;
+
+const bodyStyle = [
+  stickyTopHeight > 0 ? `padding-top:${stickyTopHeight}px;` : '',
+  stickyBottomHeight > 0 ? `padding-bottom:${stickyBottomHeight}px;` : '',
+  backgroundColor ? `background-color:${backgroundColor};` : '',
+]
+  .filter(Boolean)
+  .join('');
+
+// Fallback chain: per-LP override -> site-wide default
+const finalFaviconUrl = faviconUrl ?? siteMeta?.faviconUrl ?? undefined;
+const finalAppleTouchIconUrl =
+  appleTouchIconUrl ?? siteMeta?.appleTouchIconUrl ?? undefined;
+const finalOgpImageUrl =
+  ogpImageUrl ?? siteMeta?.ogpDefaultImageUrl ?? undefined;
+
+// OGP fields fall back to title/description if not specified
+const finalOgpTitle = ogpTitle || title;
+const finalOgpDescription = ogpDescription || description;
+
+const gtmId = tracking?.gtmId?.trim();
+const ga4Id = tracking?.ga4Id?.trim();
+const clarityId = tracking?.clarityId?.trim();
+const metaPixelId = tracking?.metaPixelId?.trim();
+// Defense-in-depth: even though tracking-tags PUT also sanitizes
+// before storage, we sanitize again at render time so a bypass at
+// the API layer (or legacy stored payloads from before this guard
+// landed) can't reach the visitor's browser.
+const customHead = sanitizeCustomHead(tracking?.customHead);
+---
+
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  {/* Basic meta */}
+  <title>{title}</title>
+  {description && <meta name="description" content={description} />}
+  {noindex && <meta name="robots" content="noindex,nofollow" />}
+
+  {/* Favicon */}
+  {finalFaviconUrl && <link rel="icon" type="image/png" href={finalFaviconUrl} />}
+
+  {/* Apple Touch Icon (180x180) */}
+  {finalAppleTouchIconUrl && (
+    <link rel="apple-touch-icon" sizes="180x180" href={finalAppleTouchIconUrl} />
+  )}
+
+  {/* Open Graph */}
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content={finalOgpTitle} />
+  {finalOgpDescription && (
+    <meta property="og:description" content={finalOgpDescription} />
+  )}
+  {finalOgpImageUrl && <meta property="og:image" content={finalOgpImageUrl} />}
+  {publicUrl && <meta property="og:url" content={publicUrl} />}
+
+  {/* Twitter Card */}
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content={finalOgpTitle} />
+  {finalOgpDescription && (
+    <meta name="twitter:description" content={finalOgpDescription} />
+  )}
+  {finalOgpImageUrl && <meta name="twitter:image" content={finalOgpImageUrl} />}
+
+  {/* Canonical URL */}
+  {publicUrl && <link rel="canonical" href={publicUrl} />}
+
+  {/* Tracking tags */}
+  {gtmId && (
+    <script
+      is:inline
+      set:html={`(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','${gtmId}');`}
+    />
+  )}
+  {ga4Id && (
+    <>
+      <script
+        is:inline
+        async
+        src={`https://www.googletagmanager.com/gtag/js?id=${ga4Id}`}
+      />
+      <script
+        is:inline
+        set:html={`window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','${ga4Id}');`}
+      />
+    </>
+  )}
+  {clarityId && (
+    <script
+      is:inline
+      set:html={`(function(c,l,a,r,i,t,y){c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);})(window,document,"clarity","script","${clarityId}");`}
+    />
+  )}
+  {metaPixelId && (
+    <script
+      is:inline
+      set:html={`!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${metaPixelId}');fbq('track','PageView');`}
+    />
+  )}
+  {customHead && <Fragment set:html={customHead} />}
+</head>
+
+<body style={bodyStyle}>
+  {gtmId && (
+    <noscript
+      set:html={`<iframe src="https://www.googletagmanager.com/ns.html?id=${gtmId}" height="0" width="0" style="display:none;visibility:hidden"></iframe>`}
+    />
+  )}
+  {metaPixelId && (
+    <noscript
+      set:html={`<img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=${metaPixelId}&ev=PageView&noscript=1"/>`}
+    />
+  )}
+  {abVariant && (
+    <script
+      is:inline
+      set:html={`window.dataLayer=window.dataLayer||[];window.dataLayer.push({event:'ab_variant',parentId:${JSON.stringify(abVariant.parentId)},bucket:${JSON.stringify(abVariant.bucket)},label:${JSON.stringify(abVariant.label)}});`}
+    />
+  )}
+  {/* `sticky` slot is rendered outside `.lp-container` so position:fixed
+      isn't trapped by any containing block the container may form. */}
+  <slot name="sticky" />
+  <div
+    class:list={[
+      'lp-container',
+      frameStyle === 'line' && 'frame-line',
+      frameStyle === 'shadow' && 'frame-shadow',
+    ]}
+    style={`max-width: ${maxWidth}px;`}
+  >
+    <slot />
+  </div>
+</body>
+</html>
+
+<style is:global>
+  /* Public LP overrides. Box-sizing / margin / padding resets are
+     handled by Tailwind's preflight — don't redeclare them here as
+     unlayered rules, or they'll override Tailwind utilities. */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background: #ffffff;
+    color: #1a1a1a;
+    font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Kaku Gothic ProN',
+      'Noto Sans JP', sans-serif;
+    line-height: 1.6;
+  }
+
+  /* Respect user's motion preferences */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+</style>
+
+<style>
+  .lp-container {
+    width: 100%;
+    margin: 0 auto;
+  }
+  /* Decorations only show on screens wider than the LP body, where
+     gutters exist. Apply unconditionally — at narrow widths the
+     container fills the viewport and the decoration sits at the
+     edges with no visible effect. */
+  .frame-line {
+    border-left: 1px solid rgba(0, 0, 0, 0.08);
+    border-right: 1px solid rgba(0, 0, 0, 0.08);
+  }
+  .frame-shadow {
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.08);
+  }
+</style>

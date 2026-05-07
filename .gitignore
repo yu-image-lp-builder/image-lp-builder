@@ -1,0 +1,65 @@
+# === Build output ===
+dist/
+build/
+.astro/
+.next/
+.cache/
+
+# === Dependencies ===
+node_modules/
+
+# === Logs ===
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# === Local development notes (git管理外) ===
+CLAUDE.md
+AGENTS.md
+.claude/
+
+# === Environment variables / Secrets ===
+.env
+.env.*
+.env.local
+.env.production
+.env.development
+*.key
+*.pem
+*.cert
+*.crt
+secrets/
+.secrets/
+credentials.json
+
+# === Cloudflare Workers ===
+.dev.vars
+.wrangler/
+wrangler-secrets.toml
+
+# === OS-specific files ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.code-workspace
+
+# === Other dangerous ===
+.aws/
+.config/
+private/
+internal/
+
+# === Local note app files ===
+.obsidian/
+.trash/
+*.canvas
+*.md.bak

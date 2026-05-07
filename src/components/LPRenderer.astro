@@ -1,0 +1,357 @@
+---
+/**
+ * LPRenderer
+ *
+ * Renders an LP from its parsed content. Used by both the root page
+ * (/) and dynamic slug pages (/[slug]).
+ *
+ * Layout strategy:
+ * - Sections stack vertically at the LP's max width.
+ * - Each section is `position: relative`; the image fills 100% width
+ *   and the section preserves its aspect ratio so the absolutely-
+ *   positioned CTAs stay anchored to the correct spot regardless of
+ *   viewport width.
+ * - CTAs are positioned with x/y as percentages of the section's
+ *   bounding box and sized as percentages too — this is what keeps
+ *   them in place across screen sizes.
+ *
+ * Webhook CTAs render as inert buttons.
+ */
+
+import type { PageContent, Cta, CtaLink } from '../lib/content';
+import { appendRefParam } from '../lib/session';
+// modern-normalize: well-known, ~2KB CSS reset that smooths out
+// browser defaults consistently. Imported at this layer so it ships
+// with every route that renders an LP — including the admin preview
+// iframe which doesn't otherwise pull in Tailwind preflight.
+import 'modern-normalize/modern-normalize.css';
+
+interface Props {
+  content: PageContent;
+  /**
+   * Map of MyLink id -> resolved URL. CTAs whose link.myLinkId is
+   * present here will use that URL instead of the inline value.
+   * Pass an empty Map (or omit) when MyLinks aren't relevant.
+   */
+  myLinkUrls?: Map<string, string>;
+  /**
+   * Visitor session id for outbound CTA URL ?ref= injection and the
+   * click beacon. Set on the public LP route; left null on previews
+   * and admin reuses (where session tracking is intentionally off).
+   */
+  sessionId?: string | null;
+  /**
+   * Owning LP id, attached as a data-page-id on each CTA so the click
+   * beacon can record the visit-to-page binding without a re-lookup.
+   * Optional so admin previews / unsaved drafts can still render.
+   */
+  pageId?: string;
+}
+
+const { content, myLinkUrls, sessionId = null, pageId } = Astro.props;
+
+const HEX_COLOR = /^#[0-9a-fA-F]{3,8}$/;
+
+function safeColor(value: string, fallback: string): string {
+  return HEX_COLOR.test(value) ? value : fallback;
+}
+
+type CtaTarget =
+  | { kind: 'link'; href: string; external: boolean }
+  | { kind: 'inert' };
+
+function resolveUrl(link: { url: string; myLinkId?: string }): string {
+  if (link.myLinkId && myLinkUrls) {
+    const resolved = myLinkUrls.get(link.myLinkId);
+    if (resolved) return resolved;
+  }
+  return link.url;
+}
+
+function ctaTarget(link: CtaLink): CtaTarget {
+  switch (link.type) {
+    case 'line_friend':
+      return {
+        kind: 'link',
+        href: appendRefParam(resolveUrl(link), sessionId),
+        external: true,
+      };
+    case 'custom_url':
+      return {
+        kind: 'link',
+        href: appendRefParam(resolveUrl(link), sessionId),
+        external: true,
+      };
+    case 'tel':
+      return { kind: 'link', href: `tel:${link.number}`, external: false };
+    case 'mailto':
+      return { kind: 'link', href: `mailto:${link.email}`, external: false };
+    case 'webhook':
+      return { kind: 'inert' };
+  }
+}
+
+function ctaStyle(cta: Cta): string {
+  const bg = safeColor(cta.style.backgroundColor, '#000000');
+  const fg = safeColor(cta.style.textColor, '#ffffff');
+  const radius = Math.max(0, Number(cta.style.borderRadius) || 0);
+  // For image-backed CTAs, the box itself is transparent — the image
+  // does the visual work — so we drop the background fill and the
+  // border radius (the image's own shape is the source of truth).
+  const hasImage = !!cta.image;
+  // Font size is applied to the inner .lp-cta-text via ctaTextStyle()
+  // so it can use container query units for the responsive shrink.
+  return [
+    `left:${cta.position.x}%`,
+    `top:${cta.position.y}%`,
+    `width:${cta.size.width}%`,
+    `height:${cta.size.height}%`,
+    hasImage ? 'background-color:transparent' : `background-color:${bg}`,
+    `color:${fg}`,
+    hasImage ? '' : `border-radius:${radius}px`,
+    hasImage ? 'padding:0' : '',
+  ]
+    .filter(Boolean)
+    .join(';');
+}
+
+/**
+ * Inline style for the text node inside a CTA. The text scales in
+ * lockstep with the CTA box itself by using container-query width
+ * units (`cqw`) — so a button that shrinks to half the size shows
+ * text at half the size too, no abrupt floor.
+ *
+ * The clamp() bounds are intentionally generous — they only kick in
+ * to keep the text from going invisibly small or absurdly large.
+ *
+ * - User-set fontSize N → preferred = (N/4) cqw (at 400px CTA width
+ *                         the font hits N px exactly), floor 8px,
+ *                         ceiling = 3 × N px so the text can grow
+ *                         on wider CTAs at the same ratio.
+ * - Unset              → anchor at 28px on a 400px CTA, same shape.
+ */
+function ctaTextStyle(cta: Cta): string {
+  const set = cta.style.fontSize;
+  const anchor = typeof set === 'number' && set > 0 ? Math.max(8, set) : 28;
+  const cqw = +(anchor / 4).toFixed(2);
+  const ceil = anchor * 3;
+  return `font-size: clamp(8px, ${cqw}cqw, ${ceil}px);`;
+}
+---
+
+<div class="lp">
+  {content.sections.map((section) => {
+    const aspect = `${section.image.width} / ${section.image.height}`;
+    return (
+      <section class="lp-section" style={`aspect-ratio: ${aspect}`}>
+        <img
+          src={section.image.url}
+          alt={section.image.alt ?? ''}
+          width={section.image.width}
+          height={section.image.height}
+          loading="lazy"
+          decoding="async"
+          class="lp-image"
+        />
+        {section.ctas.map((cta) => {
+          const target = ctaTarget(cta.link);
+          const style = ctaStyle(cta);
+          const animClass =
+            cta.animation && cta.animation !== 'none'
+              ? `cta-anim-${cta.animation}`
+              : '';
+          const inner = cta.image ? (
+            <img
+              src={cta.image.url}
+              alt={cta.text}
+              width={cta.image.width}
+              height={cta.image.height}
+              loading="lazy"
+              decoding="async"
+              class="lp-cta-image"
+            />
+          ) : (
+            <span class="lp-cta-text" style={ctaTextStyle(cta)}>{cta.text}</span>
+          );
+          // Only attach tracking data when this LP is being rendered
+          // through the public route (pageId is set there). Admin
+          // previews and unsaved drafts skip the attributes so the
+          // click-beacon script no-ops on them.
+          const trackAttrs = pageId
+            ? {
+                'data-cta-id': cta.id,
+                'data-page-id': pageId,
+                'data-link-type': cta.link.type,
+                'data-destination-url':
+                  target.kind === 'link' ? target.href : '',
+              }
+            : {};
+          if (target.kind === 'link') {
+            return (
+              <a
+                href={target.href}
+                class:list={['lp-cta', animClass, cta.image && 'lp-cta-has-image']}
+                style={style}
+                {...(target.external && {
+                  target: '_blank',
+                  rel: 'noopener noreferrer',
+                })}
+                {...trackAttrs}
+              >
+                {inner}
+              </a>
+            );
+          }
+          return (
+            <button
+              type="button"
+              class:list={['lp-cta', animClass, cta.image && 'lp-cta-has-image']}
+              style={style}
+              disabled
+              {...trackAttrs}
+            >
+              {inner}
+            </button>
+          );
+        })}
+      </section>
+    );
+  })}
+</div>
+
+{pageId && (
+  <script
+    is:inline
+    define:vars={{ pageId, sessionId, beaconPath: '/go/track' }}
+  >
+    // Click beacon — fires on every CTA tap so external destinations
+    // (LINE URLs, custom URLs, tel:, mailto:) are still recorded
+    // even though the navigation leaves the site immediately.
+    //
+    // sendBeacon stays alive across the unload that the navigation
+    // triggers; fetch with `keepalive: true` is the fallback when
+    // sendBeacon isn't available. Either way the request is fire-and-
+    // forget — a failure here is silent and never blocks the click.
+    document.addEventListener('click', function (event) {
+      var target = event.target;
+      if (!target || typeof target.closest !== 'function') return;
+      var cta = target.closest('.lp-cta[data-cta-id]');
+      if (!cta) return;
+      var ctaId = cta.getAttribute('data-cta-id');
+      if (!ctaId) return;
+      var body = JSON.stringify({
+        pageId: pageId,
+        ctaId: ctaId,
+        sessionId: sessionId,
+        linkType: cta.getAttribute('data-link-type'),
+        destinationUrl: cta.getAttribute('data-destination-url') || null,
+      });
+      try {
+        if (navigator.sendBeacon) {
+          var blob = new Blob([body], { type: 'application/json' });
+          if (navigator.sendBeacon(beaconPath, blob)) return;
+        }
+      } catch (_e) {
+        // fall through to fetch
+      }
+      try {
+        fetch(beaconPath, {
+          method: 'POST',
+          body: body,
+          keepalive: true,
+          headers: { 'Content-Type': 'application/json' },
+        }).catch(function () {});
+      } catch (_e) {
+        // last-resort swallow — the actual navigation must not be
+        // blocked by tracking.
+      }
+    });
+  </script>
+)}
+
+<style is:global>
+  /* Tiny LP-side additions on top of modern-normalize (imported via
+     the Astro frontmatter). :where() keeps specificity at 0 so any
+     Tailwind preflight / self-hoster custom CSS still wins on conflict.
+  */
+  :where(a) { color: inherit; text-decoration: none; }
+  :where(img, svg, video, canvas, picture) {
+    display: block;
+    max-width: 100%;
+    height: auto;
+  }
+  :where(ul, ol) { list-style: none; padding: 0; margin: 0; }
+</style>
+
+<style>
+  .lp {
+    width: 100%;
+    margin: 0 auto;
+    background: #ffffff;
+  }
+
+  .lp-section {
+    position: relative;
+    width: 100%;
+    overflow: hidden;
+  }
+
+  .lp-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .lp-cta {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+    font-family: system-ui, -apple-system, 'Hiragino Sans', 'Yu Gothic',
+      sans-serif;
+    font-weight: bold;
+    box-sizing: border-box;
+    padding: 0 0.5em;
+    line-height: 1.2;
+    transition: transform 0.15s ease;
+    /* Establish a containment context so the inner .lp-cta-text can
+       use cqw units to scale font-size with the CTA's own width. */
+    container-type: inline-size;
+  }
+
+  .lp-cta:hover {
+    transform: translateY(-1px);
+  }
+
+  .lp-cta:disabled {
+    cursor: default;
+  }
+
+  .lp-cta-text {
+    display: block;
+    text-align: center;
+    width: 100%;
+    word-break: keep-all;
+    overflow-wrap: break-word;
+  }
+
+  /* Image-backed CTAs: the <a>/<button> box is just a hit target;
+     the image itself fills it preserving aspect ratio. */
+  .lp-cta-has-image {
+    overflow: hidden;
+  }
+  .lp-cta-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+  }
+
+  /* CTA animations live in src/styles/global.css (cta-anim-*) so the
+     editor preview and the public LP share the same definitions. */
+</style>

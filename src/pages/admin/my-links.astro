@@ -1,0 +1,25 @@
+---
+/**
+ * /admin/my-links
+ *
+ * MyLinks management screen — register / edit / delete reusable
+ * destinations referenced by CTA buttons across LPs.
+ */
+
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import MyLinksManager from '../../components/admin/MyLinksManager';
+
+export const prerender = false;
+---
+
+<AdminLayout title="マイリンク">
+  <div class="max-w-4xl mx-auto">
+    <h1 class="text-2xl font-bold text-gray-900 mb-2">マイリンク</h1>
+    <p class="text-sm text-gray-600 mb-6">
+      よく使う URL(LINE 友だち追加 / フォーム / メール等)を一元管理。<br />
+      ボタンの参照元として使うと、URL を1箇所変えるだけで全ボタンに反映されます。
+    </p>
+
+    <MyLinksManager client:load />
+  </div>
+</AdminLayout>

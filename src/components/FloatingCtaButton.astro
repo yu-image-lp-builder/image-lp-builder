@@ -1,0 +1,217 @@
+---
+/**
+ * FloatingCtaButton
+ *
+ * Persistent CTA fixed to the top-center or bottom-center of the
+ * viewport. Reuses the CtaLink schema from in-section CTAs so MyLink
+ * resolution behaves identically.
+ *
+ * Two server-side concerns handled here:
+ * - Resolve MyLink id -> URL for line_friend / custom_url / webhook
+ * - Pick the right href format per link type (tel:, mailto:, http(s):)
+ *
+ * Optional scroll-trigger: when `showAfterScrollPercent` > 0, the
+ * button starts hidden and unhides once the visitor has scrolled past
+ * that fraction of the page. Plain inline JS, no React.
+ */
+
+import type { CtaLink, FloatingCta } from '../lib/content';
+
+interface Props {
+  cta: FloatingCta;
+  myLinkUrls?: Map<string, string>;
+}
+
+const { cta, myLinkUrls } = Astro.props;
+
+const HEX_COLOR = /^#[0-9a-fA-F]{3,8}$/;
+const safeColor = (v: string | undefined, fallback: string) =>
+  v && HEX_COLOR.test(v) ? v : fallback;
+
+function resolveUrl(link: { url: string; myLinkId?: string }): string {
+  if (link.myLinkId && myLinkUrls) {
+    const resolved = myLinkUrls.get(link.myLinkId);
+    if (resolved) return resolved;
+  }
+  return link.url;
+}
+
+type Target =
+  | { kind: 'link'; href: string; external: boolean }
+  | { kind: 'inert' };
+
+function ctaTarget(link: CtaLink): Target {
+  switch (link.type) {
+    case 'line_friend':
+    case 'custom_url':
+      return { kind: 'link', href: resolveUrl(link), external: true };
+    case 'tel':
+      return { kind: 'link', href: `tel:${link.number}`, external: false };
+    case 'mailto':
+      return { kind: 'link', href: `mailto:${link.email}`, external: false };
+    case 'webhook':
+      // Webhook execution from a public LP isn't wired up yet; render
+      // as an inert button so the layout still validates.
+      return { kind: 'inert' };
+  }
+}
+
+const target = ctaTarget(cta.link);
+const bg = safeColor(cta.backgroundColor, '#1f2937');
+const fg = safeColor(cta.textColor, '#ffffff');
+const radius = Math.max(0, Number(cta.borderRadius ?? 9999));
+const positionClass =
+  cta.position === 'top' ? 'floating-cta-top' : 'floating-cta-bottom';
+
+const scroll =
+  typeof cta.showAfterScrollPercent === 'number' &&
+  cta.showAfterScrollPercent > 0 &&
+  cta.showAfterScrollPercent <= 100
+    ? cta.showAfterScrollPercent
+    : 0;
+
+const initiallyHidden = scroll > 0;
+const hasImage = !!cta.image;
+const imageWidth = Math.min(
+  Math.max(40, Number(cta.imageWidth ?? 200) || 200),
+  2000
+);
+// For image CTAs, the box becomes a transparent hit-area sized to
+// the image (width-driven, height by aspect ratio); for text CTAs,
+// the existing pill styling carries on.
+const inlineStyle = hasImage
+  ? `background:transparent;border:0;padding:0;${
+      initiallyHidden ? 'opacity:0;pointer-events:none;' : ''
+    }`
+  : `background:${bg};color:${fg};border-radius:${radius}px;${
+      initiallyHidden ? 'opacity:0;pointer-events:none;' : ''
+    }`;
+---
+
+{target.kind === 'link' ? (
+  <a
+    href={target.href}
+    class:list={['floating-cta', positionClass, hasImage && 'floating-cta-has-image']}
+    style={inlineStyle}
+    data-show-after={scroll > 0 ? scroll : undefined}
+    {...(target.external && {
+      target: '_blank',
+      rel: 'noopener noreferrer',
+    })}
+  >
+    {hasImage && cta.image ? (
+      <img
+        src={cta.image.url}
+        alt={cta.text}
+        width={cta.image.width}
+        height={cta.image.height}
+        style={`width:${imageWidth}px;height:auto;display:block;max-width:calc(100vw - 2rem);`}
+        loading="lazy"
+        decoding="async"
+      />
+    ) : (
+      cta.text
+    )}
+  </a>
+) : (
+  <button
+    type="button"
+    class:list={['floating-cta', positionClass, hasImage && 'floating-cta-has-image']}
+    style={inlineStyle}
+    data-show-after={scroll > 0 ? scroll : undefined}
+    disabled
+  >
+    {hasImage && cta.image ? (
+      <img
+        src={cta.image.url}
+        alt={cta.text}
+        width={cta.image.width}
+        height={cta.image.height}
+        style={`width:${imageWidth}px;height:auto;display:block;max-width:calc(100vw - 2rem);`}
+        loading="lazy"
+        decoding="async"
+      />
+    ) : (
+      cta.text
+    )}
+  </button>
+)}
+
+{scroll > 0 && (
+  <script>
+    (function () {
+      const el = document.currentScript?.previousElementSibling as HTMLElement | null;
+      if (!el || !el.dataset.showAfter) return;
+      const threshold = Number(el.dataset.showAfter);
+      if (!Number.isFinite(threshold) || threshold <= 0) {
+        el.style.opacity = '1';
+        el.style.pointerEvents = 'auto';
+        return;
+      }
+
+      function update() {
+        const docH = document.documentElement.scrollHeight - window.innerHeight;
+        if (docH <= 0) {
+          el!.style.opacity = '1';
+          el!.style.pointerEvents = 'auto';
+          return;
+        }
+        const pct = (window.scrollY / docH) * 100;
+        const visible = pct >= threshold;
+        el!.style.opacity = visible ? '1' : '0';
+        el!.style.pointerEvents = visible ? 'auto' : 'none';
+      }
+
+      update();
+      window.addEventListener('scroll', update, { passive: true });
+      window.addEventListener('resize', update);
+    })();
+  </script>
+)}
+
+<style>
+  .floating-cta {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 51;
+    padding: 0.85rem 1.5rem;
+    font-size: 1rem;
+    font-weight: bold;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+    transition: opacity 0.2s ease, transform 0.15s ease;
+    font-family: system-ui, -apple-system, 'Hiragino Sans', 'Yu Gothic', sans-serif;
+    max-width: calc(100vw - 2rem);
+    text-align: center;
+    line-height: 1.2;
+  }
+
+  .floating-cta:hover:not(:disabled) {
+    transform: translateX(-50%) translateY(-2px);
+  }
+
+  .floating-cta:disabled {
+    cursor: default;
+  }
+
+  .floating-cta-top {
+    top: 1rem;
+  }
+
+  .floating-cta-bottom {
+    bottom: 1rem;
+  }
+
+  .floating-cta-has-image {
+    /* Image carries its own padding/shape; the wrapper just hosts the
+       hit area + the floating position. */
+    padding: 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  }
+  .floating-cta-has-image:hover:not(:disabled) {
+    transform: translateX(-50%) translateY(-2px);
+  }
+</style>

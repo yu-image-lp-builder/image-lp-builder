@@ -1,0 +1,306 @@
+---
+/**
+ * Admin dashboard (/admin)
+ *
+ * Shows LP list as cards. If no LPs exist, shows onboarding.
+ * Authentication enforced by middleware.
+ */
+
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import TrashSection from '../../components/admin/TrashSection';
+import { env } from 'cloudflare:workers';
+import { pageQueries, type Page } from '../../lib/db';
+import { parseContent } from '../../lib/content';
+import { statusInfo } from '../../lib/labels';
+
+export const prerender = false;
+
+const db = env?.DB;
+const workspaceId = Astro.locals.workspace_id;
+
+// Pagination
+const url = new URL(Astro.request.url);
+const page = parseInt(url.searchParams.get('page') ?? '1', 10);
+const limit = 20;
+const offset = (page - 1) * limit;
+
+const lps: Page[] = db
+  ? await pageQueries.listAll(db, workspaceId, { limit, offset })
+  : [];
+const totalCount = db ? await pageQueries.countAll(db, workspaceId) : 0;
+const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+
+const hasLPs = lps.length > 0 || totalCount > 0;
+
+/**
+ * Format date string to YYYY-MM-DD.
+ */
+function formatDate(isoString: string): string {
+  return isoString.split(' ')[0] ?? isoString;
+}
+---
+
+<AdminLayout title="LP一覧">
+  <div class="admin-dashboard">
+    <header class="page-header">
+      <h1>LP一覧</h1>
+      <a href="/admin/lps/new" class="btn-primary">+ 新規LP作成</a>
+    </header>
+
+    {!hasLPs ? (
+      // Onboarding: no LPs yet
+      <div class="onboarding">
+        <div class="onboarding-card">
+          <h2>最初のLPを作りましょう</h2>
+          <p>画像をアップロードして、<br />CTAボタンを配置するだけでLPが完成します。</p>
+          <a href="/admin/lps/new" class="btn-primary btn-large">
+            最初のLPを作成
+          </a>
+        </div>
+      </div>
+    ) : (
+      // LP cards
+      <>
+        <div class="lp-grid">
+          {lps.map((lp) => (
+            <a href={`/admin/lps/${lp.id}`} class="lp-card">
+              <div class="lp-thumbnail">
+                {(() => {
+                  const c = parseContent(lp.content);
+                  const thumb = c.meta?.ogImage || c.sections[0]?.image.url;
+                  const src = thumb || '/no-image.svg';
+                  return (
+                    <img
+                      src={src}
+                      alt={lp.slug}
+                      loading="lazy"
+                      class="thumbnail-img"
+                      onerror="this.onerror=null;this.src='/no-image.svg';"
+                    />
+                  );
+                })()}
+              </div>
+              <div class="lp-info">
+                <div class="lp-title">
+                  {lp.slug}
+                </div>
+                <div class="lp-meta">
+                  <span class={`status status-${lp.status}`}>
+                    {statusInfo(lp.status).label}
+                  </span>
+                  <span class="updated-at">{formatDate(lp.updated_at)}</span>
+                </div>
+              </div>
+            </a>
+          ))}
+        </div>
+
+        {totalPages > 1 && (
+          <nav class="pagination">
+            {page > 1 && (
+              <a href={`?page=${page - 1}`} class="page-link">← 前へ</a>
+            )}
+            <span class="page-info">
+              {page} / {totalPages}
+            </span>
+            {page < totalPages && (
+              <a href={`?page=${page + 1}`} class="page-link">次へ →</a>
+            )}
+          </nav>
+        )}
+      </>
+    )}
+
+    <TrashSection client:load />
+  </div>
+</AdminLayout>
+
+<style>
+  .admin-dashboard {
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  /* Page header */
+  .page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+  }
+
+  .page-header h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .btn-primary {
+    background: #1a1a1a;
+    color: #ffffff;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: opacity 0.15s;
+  }
+
+  .btn-primary:hover {
+    opacity: 0.9;
+  }
+
+  .btn-large {
+    padding: 0.75rem 1.5rem;
+    font-size: 1rem;
+  }
+
+  /* Onboarding */
+  .onboarding {
+    display: flex;
+    justify-content: center;
+    padding: 4rem 1rem;
+  }
+
+  .onboarding-card {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.75rem;
+    padding: 3rem 2rem;
+    text-align: center;
+    max-width: 500px;
+  }
+
+  .onboarding-card h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 0 0 1rem;
+  }
+
+  .onboarding-card p {
+    color: #6b7280;
+    margin: 0 0 2rem;
+    line-height: 1.6;
+  }
+
+  /* LP grid */
+  .lp-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .lp-card {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+    overflow: hidden;
+    transition: border-color 0.15s, transform 0.15s;
+    display: block;
+  }
+
+  .lp-card:hover {
+    border-color: #1a1a1a;
+    transform: translateY(-2px);
+  }
+
+  .lp-thumbnail {
+    aspect-ratio: 4 / 3;
+    background: #f3f4f6;
+    overflow: hidden;
+  }
+
+  .thumbnail-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .thumbnail-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #9ca3af;
+    font-size: 0.875rem;
+    font-family: monospace;
+  }
+
+  .lp-info {
+    padding: 0.875rem 1rem;
+  }
+
+  .lp-title {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  .lp-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.75rem;
+    color: #6b7280;
+  }
+
+  .status {
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+
+  .status-published {
+    background: #dcfce7;
+    color: #166534;
+  }
+
+  .status-draft {
+    background: #fef3c7;
+    color: #92400e;
+  }
+
+  .status-preview {
+    background: #dbeafe;
+    color: #1e40af;
+  }
+
+  .status-archived {
+    background: #f3f4f6;
+    color: #4b5563;
+  }
+
+  /* Pagination */
+  .pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem 0;
+  }
+
+  .page-link {
+    padding: 0.5rem 1rem;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.375rem;
+    color: #1a1a1a;
+    font-size: 0.875rem;
+    transition: background 0.15s;
+  }
+
+  .page-link:hover {
+    background: #f3f4f6;
+  }
+
+  .page-info {
+    font-size: 0.875rem;
+    color: #6b7280;
+  }
+</style>

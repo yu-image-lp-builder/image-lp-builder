@@ -1,0 +1,38 @@
+---
+/**
+ * /admin/members
+ *
+ * Workspace admin roster. Add by email, remove by row, list shows
+ * sign-in status. Self-row hides the remove button (server also
+ * blocks self-delete).
+ */
+
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminMembersPanel from '../../components/admin/AdminMembersPanel.tsx';
+
+export const prerender = false;
+
+const user = Astro.locals.user;
+if (!user) {
+  // Defensive: middleware should have redirected to /admin/login.
+  return Astro.redirect('/admin/login', 302);
+}
+---
+
+<AdminLayout title="メンバー管理">
+  <div class="max-w-2xl mx-auto">
+    <header class="mb-4">
+      <h1 class="text-2xl font-bold text-gray-900">メンバー管理</h1>
+      <p class="mt-1 text-sm text-gray-600">
+        管理画面にログインできる Google アカウントを管理します。
+      </p>
+      <div class="mt-3 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700">
+        <p class="mb-1">🔒 登録したメールアドレスのみログインできます(他は自動で拒否)</p>
+        <p class="mb-2">⚠️ 登録できるのは Google アカウント(Gmail / Google Workspace)のみです</p>
+        <p class="font-semibold mb-1 pt-2 border-t border-gray-200">登録された全員がオーナー権限を持ちます</p>
+        <p>LP の作成・編集・公開停止・削除、メンバーの追加・削除、サイト全体設定(独自ドメイン・トラッキングタグ・OGP)、マイリンク管理、UTM 短縮 URL 発行、パスワード保護など、すべての機能を利用できます。</p>
+      </div>
+    </header>
+    <AdminMembersPanel client:load currentAdminId={user.id} />
+  </div>
+</AdminLayout>

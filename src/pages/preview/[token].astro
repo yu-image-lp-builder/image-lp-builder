@@ -1,0 +1,116 @@
+---
+/**
+ * /preview/:token
+ *
+ * Limited-share preview link for unpublished (or any-status) LPs.
+ * The token is generated server-side and is treated as the
+ * authentication: anyone with the URL can view the LP.
+ *
+ * Use case: self-hoster wants to send a draft LP to a client / business
+ * partner for feedback before going live. Owner rotates or revokes
+ * the token to expire the link.
+ */
+
+import PublicLayout from '../../layouts/PublicLayout.astro';
+import LPRenderer from '../../components/LPRenderer.astro';
+import CountdownBar from '../../components/CountdownBar.astro';
+import ScarcityBar from '../../components/ScarcityBar.astro';
+import FloatingCtaButton from '../../components/FloatingCtaButton.astro';
+import { env } from 'cloudflare:workers';
+import {
+  pageQueries,
+  myLinkQueries,
+  trackingTagsQueries,
+  siteMetaQueries,
+  siteSettingsQueries,
+} from '../../lib/db';
+import { maintenanceResponse } from '../../lib/maintenance';
+import { parseContent } from '../../lib/content';
+import { toAbsoluteUrl } from '../../lib/url';
+import { resolveTracking } from '../../lib/tracking';
+import { resolveSiteMeta } from '../../lib/site-meta';
+import { computePromotionsLayout } from '../../lib/promotions-layout';
+import { resolveCountdown } from '../../lib/countdown';
+
+export const prerender = false;
+
+const { token } = Astro.params;
+if (typeof token !== 'string' || token.length === 0) {
+  return Astro.rewrite('/404');
+}
+
+const db = env?.DB;
+
+if (db && (await siteSettingsQueries.get(db)).maintenance_mode === 1) {
+  return maintenanceResponse();
+}
+const lp = db ? await pageQueries.findByPreviewToken(db, token) : null;
+if (!lp) {
+  return Astro.rewrite('/404');
+}
+// Trash is excluded — once moved to trash the preview link should
+// stop working too.
+if (lp.status === 'trash') {
+  return Astro.rewrite('/404');
+}
+
+const content = parseContent(lp.content);
+// `findByPreviewToken` is workspace-agnostic (tokens are unique
+// across the table). Once we have the LP, scope MyLink lookups to
+// its workspace so a preview only sees the right links.
+const myLinks = db ? await myLinkQueries.list(db, lp.workspace_id) : [];
+const myLinkUrls = new Map(myLinks.map((m) => [m.id, m.url]));
+const ogImageAbsolute = toAbsoluteUrl(
+  content.meta?.ogImage || content.sections[0]?.image.url,
+  Astro.url
+);
+const tracking = db
+  ? resolveTracking(await trackingTagsQueries.get(db, lp.workspace_id))
+  : undefined;
+const siteMeta = db
+  ? resolveSiteMeta(await siteMetaQueries.get(db, lp.workspace_id))
+  : undefined;
+
+let countdown = content.promotions?.countdown;
+if (countdown) {
+  const resolved = resolveCountdown(
+    countdown,
+    lp,
+    Astro.request.headers.get('cookie')
+  );
+  countdown = resolved.countdown;
+  if (resolved.setCookie) {
+    Astro.response.headers.append('Set-Cookie', resolved.setCookie);
+  }
+}
+const promotionsForLayout = countdown
+  ? { ...content.promotions, countdown }
+  : content.promotions;
+const layout = computePromotionsLayout(promotionsForLayout);
+const scarcity = content.promotions?.scarcity;
+const floatingCta = content.promotions?.floatingCta;
+---
+
+<PublicLayout
+  title={`${content.meta?.title || lp.slug} (preview)`}
+  description={content.meta?.description}
+  ogpImageUrl={ogImageAbsolute}
+  maxWidth={lp.max_width}
+  backgroundColor={lp.background_color}
+  frameStyle={lp.frame_style}
+  tracking={tracking}
+  siteMeta={siteMeta}
+  stickyTopHeight={layout.stickyTopHeight}
+  stickyBottomHeight={layout.stickyBottomHeight}
+>
+  <Fragment slot="sticky">
+    {layout.showCountdown && countdown && <CountdownBar countdown={countdown} />}
+    {layout.showScarcity && scarcity && (
+      <ScarcityBar scarcity={scarcity} offset={layout.scarcityOffset} />
+    )}
+    {layout.showFloatingCta && floatingCta && (
+      <FloatingCtaButton cta={floatingCta} myLinkUrls={myLinkUrls} />
+    )}
+  </Fragment>
+  <LPRenderer content={content} myLinkUrls={myLinkUrls} />
+</PublicLayout>

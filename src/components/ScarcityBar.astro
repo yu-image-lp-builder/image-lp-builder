@@ -1,0 +1,68 @@
+---
+/**
+ * ScarcityBar
+ *
+ * Sticky bar that shows a free-form scarcity message such as
+ * "残り 3 席" or "あと 2 名様". Static text — no client-side JS needed.
+ *
+ * Stacks with CountdownBar when both are pinned to the same edge:
+ * countdown takes the outer slot and scarcity sits inside it (44px
+ * inset). The page is responsible for plumbing both heights into
+ * PublicLayout's body padding.
+ */
+
+import type { Scarcity } from '../lib/content';
+
+interface Props {
+  scarcity: Scarcity;
+  /**
+   * Pixel offset from the edge the bar is anchored to. Used when a
+   * countdown bar is on the same edge so scarcity sits beside it.
+   */
+  offset?: number;
+}
+
+const { scarcity, offset = 0 } = Astro.props;
+
+const HEX_COLOR = /^#[0-9a-fA-F]{3,8}$/;
+const safeColor = (v: string | undefined, fallback: string) =>
+  v && HEX_COLOR.test(v) ? v : fallback;
+
+const bg = safeColor(scarcity.backgroundColor, '#f59e0b');
+const fg = safeColor(scarcity.textColor, '#1f2937');
+const isTop = scarcity.position === 'top';
+const positionStyle = isTop ? `top:${offset}px;` : `bottom:${offset}px;`;
+---
+
+<div
+  class:list={['scarcity-bar', isTop ? 'scarcity-top' : 'scarcity-bottom']}
+  style={`background:${bg};color:${fg};${positionStyle}`}
+>
+  <span class="scarcity-text">{scarcity.text}</span>
+</div>
+
+<style>
+  .scarcity-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    z-index: 49;
+    padding: 0.55rem 1rem;
+    text-align: center;
+    font-size: 0.9rem;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .scarcity-top {
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  }
+
+  .scarcity-bottom {
+    box-shadow: 0 -1px 4px rgba(0, 0, 0, 0.12);
+  }
+
+  .scarcity-text {
+    display: inline-block;
+  }
+</style>

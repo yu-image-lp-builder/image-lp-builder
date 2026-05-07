@@ -1,0 +1,201 @@
+---
+/**
+ * /admin/login
+ *
+ * The single sign-in surface for the admin UI. Carries one button —
+ * "Google でログイン" — that POSTs to /admin/auth/start, which
+ * generates a CSRF state cookie and redirects to the auth-relay.
+ *
+ * If the visitor already has a valid admin session, we send them
+ * straight to the destination (or /admin) so refreshing the login
+ * page after a successful login isn't a dead end.
+ *
+ * `redirect_to` carries the path the middleware caught — the
+ * post-login redirect lands them back where they tried to go.
+ * Validated server-side to be a same-origin path so an attacker
+ * can't bounce a victim off-site.
+ */
+
+import '../../styles/global.css';
+import { env } from 'cloudflare:workers';
+import {
+  readAdminSessionCookie,
+  verifyAdminSession,
+} from '../../lib/admin-session';
+
+export const prerender = false;
+
+const url = new URL(Astro.request.url);
+const rawRedirect = url.searchParams.get('redirect_to') ?? '/admin';
+const redirectTo = isSafeRedirect(rawRedirect) ? rawRedirect : '/admin';
+
+// Already authenticated? Skip the login screen.
+const cookieHeader = Astro.request.headers.get('cookie');
+const existingToken = readAdminSessionCookie(cookieHeader);
+if (env?.DB && existingToken) {
+  const found = await verifyAdminSession(env.DB, existingToken);
+  if (found) {
+    return Astro.redirect(redirectTo, 302);
+  }
+}
+
+function isSafeRedirect(target: string): boolean {
+  // Only allow same-origin paths, not full URLs and not protocol-
+  // relative `//` (which the browser treats as a different origin).
+  return target.startsWith('/') && !target.startsWith('//');
+}
+---
+
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>ログイン | Image LP Builder</title>
+</head>
+<body>
+  <main class="login-shell">
+    <div class="login-card">
+      <header class="login-header">
+        <h1 class="login-logo">
+          <span class="login-logo-name">Image LP Builder</span>
+          <span class="login-logo-by">by yulab</span>
+        </h1>
+        <p class="login-tagline">管理画面にログイン</p>
+      </header>
+
+      <form method="GET" action="/admin/auth/start" class="login-form">
+        <input type="hidden" name="redirect_to" value={redirectTo} />
+        <button type="submit" class="google-button">
+          <svg
+            class="google-icon"
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 48 48"
+            aria-hidden="true"
+          >
+            <path
+              fill="#FFC107"
+              d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"
+            />
+            <path
+              fill="#FF3D00"
+              d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"
+            />
+            <path
+              fill="#4CAF50"
+              d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238C29.211 35.091 26.715 36 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"
+            />
+            <path
+              fill="#1976D2"
+              d="M43.611 20.083H42V20H24v8h11.303c-.792 2.237-2.231 4.166-4.087 5.571.001-.001.002-.001.003-.002l6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"
+            />
+          </svg>
+          <span>Google でログイン</span>
+        </button>
+      </form>
+
+      <p class="login-note">
+        ログインできるのは管理者として登録された Google アカウントのみです。
+      </p>
+    </div>
+  </main>
+</body>
+</html>
+
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Kaku Gothic ProN',
+      'Noto Sans JP', sans-serif;
+    background: #f5f7fa;
+    color: #1a1a1a;
+    margin: 0;
+  }
+
+  .login-shell {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }
+
+  .login-card {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.75rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    width: 100%;
+    max-width: 380px;
+    padding: 2rem;
+  }
+
+  .login-header {
+    text-align: center;
+    margin-bottom: 1.5rem;
+  }
+
+  .login-logo {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.375rem;
+    margin: 0 0 0.5rem 0;
+    font-size: 1.25rem;
+  }
+
+  .login-logo-name {
+    font-weight: bold;
+  }
+
+  .login-logo-by {
+    font-size: 0.75rem;
+    color: #6b7280;
+    font-weight: 400;
+  }
+
+  .login-tagline {
+    color: #4b5563;
+    font-size: 0.875rem;
+    margin: 0;
+  }
+
+  .login-form {
+    margin: 0;
+  }
+
+  .google-button {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.625rem;
+    padding: 0.75rem 1rem;
+    background: #ffffff;
+    color: #1f2937;
+    border: 1px solid #d1d5db;
+    border-radius: 0.5rem;
+    font-size: 0.9375rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, box-shadow 0.15s;
+  }
+
+  .google-button:hover {
+    background: #f9fafb;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  }
+
+  .google-icon {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+
+  .login-note {
+    color: #6b7280;
+    font-size: 0.8125rem;
+    text-align: center;
+    margin: 1.25rem 0 0 0;
+    line-height: 1.5;
+  }
+</style>

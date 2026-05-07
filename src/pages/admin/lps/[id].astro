@@ -1,0 +1,177 @@
+---
+/**
+ * /admin/lps/:id
+ *
+ * LP edit screen. Server-renders the current state (sections,
+ * status, etc.) and hosts an LpActions React island for the
+ * publish / unpublish / delete buttons.
+ *
+ * Section editing UI (image upload, drag-and-drop reordering,
+ * CTA placement) is added in subsequent steps.
+ */
+
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import LpActions from '../../../components/admin/LpActions';
+import SectionAdder from '../../../components/admin/SectionAdder';
+import SectionList from '../../../components/admin/SectionList';
+import DropZone from '../../../components/admin/DropZone';
+import PreviewModal from '../../../components/admin/PreviewModal';
+// QrModal moved into the unified preview tab (📱 panel of mock.astro);
+// keeping the import would be dead code.
+// import QrModal from '../../../components/admin/QrModal';
+import PublishPanel from '../../../components/admin/PublishPanel';
+import LpMetaPanel from '../../../components/admin/LpMetaPanel';
+import UtmLinksPanel from '../../../components/admin/UtmLinksPanel';
+import PromotionsPanel from '../../../components/admin/PromotionsPanel';
+// A/B test UI is intentionally disabled: ad platforms (Meta / Google
+// Ads) split-test creatives → LPs at the campaign level, so an
+// in-LP A/B layer is just clutter for self-hosters. Implementation
+// kept around (component, API, MCP tool, DB queries) so it can be
+// re-enabled without rebuilding from scratch.
+// import AbTestPanel from '../../../components/admin/AbTestPanel';
+import { env } from 'cloudflare:workers';
+import { pageQueries } from '../../../lib/db';
+import { parseContent } from '../../../lib/content';
+import { statusInfo } from '../../../lib/labels';
+
+export const prerender = false;
+
+const { id } = Astro.params;
+if (typeof id !== 'string' || id.length === 0) {
+  return new Response('Not Found', { status: 404 });
+}
+
+const db = env?.DB;
+const workspaceId = Astro.locals.workspace_id;
+const lp = db ? await pageQueries.findById(db, workspaceId, id) : null;
+if (!lp) {
+  return new Response('Not Found', { status: 404 });
+}
+
+const content = parseContent(lp.content);
+const statusBadge = statusInfo(lp.status);
+
+---
+
+<AdminLayout title={`Edit: ${lp.slug}`}>
+  <div class="max-w-4xl mx-auto">
+    <a href="/admin" class="text-sm text-gray-500 hover:text-gray-700 mb-4 inline-block">
+      ← LP一覧に戻る
+    </a>
+
+    <div class="flex items-start justify-between gap-4 mb-6">
+      <div>
+        <h1 class="text-2xl font-bold text-gray-900">{lp.slug}</h1>
+        <div class="flex flex-wrap gap-2 mt-2">
+          <span class={`px-2 py-1 text-xs font-medium rounded ${statusBadge.classes}`}>
+            {statusBadge.label}
+          </span>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2 flex-wrap">
+        <PreviewModal lpId={lp.id} client:load />
+        {/* QR is now inside the unified preview tab (📱 スマホ panel)
+            so we don't need a standalone button here. */}
+        <LpActions
+          lp={{ id: lp.id, slug: lp.slug, status: lp.status }}
+          client:load
+        />
+      </div>
+    </div>
+
+    <div id="panel-publish">
+    <PublishPanel
+      lpId={lp.id}
+      slug={lp.slug}
+      isPublished={lp.status === 'published'}
+      initialMaxWidth={lp.max_width}
+      initialPublishAt={lp.publish_at}
+      initialUnpublishAt={lp.unpublish_at}
+      initialPasswordProtected={!!lp.password_hash}
+      initialHasPendingChanges={
+        lp.status === 'published' && lp.live_content !== lp.content
+      }
+      initialBackgroundColor={lp.background_color}
+      initialFrameStyle={lp.frame_style}
+      client:load
+    />
+    </div>
+
+    {lp.page_type === 'ab_variant' && lp.parent_id && (
+      <div class="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-900 mb-6">
+        🧪 これは A/B バリアントです(機能は無効化中)。
+        <a href={`/admin/lps/${lp.parent_id}`} class="underline font-semibold">
+          親 LP に戻る
+        </a>
+      </div>
+    )}
+
+    <div id="panel-sections" class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">
+          セクション
+          {content.sections.length > 0 && (
+            <span class="ml-2 text-sm font-normal text-gray-500">
+              ({content.sections.length}個)
+            </span>
+          )}
+        </h2>
+        <SectionAdder lpId={lp.id} client:load />
+      </div>
+
+      <SectionList
+        lpId={lp.id}
+        initialSections={content.sections}
+        initialArchivedSections={content.archived_sections ?? []}
+        client:load
+      />
+
+      <div class="mt-4">
+        <DropZone lpId={lp.id} client:load />
+      </div>
+    </div>
+
+    <div id="panel-meta">
+    <LpMetaPanel
+      lpId={lp.id}
+      initialMeta={content.meta ?? {}}
+      sections={content.sections}
+      client:load
+    />
+    </div>
+
+    <UtmLinksPanel lpId={lp.id} client:load />
+
+    <PromotionsPanel
+      lpId={lp.id}
+      initialPromotions={content.promotions ?? {}}
+      client:load
+    />
+
+    {/* A/B test panel disabled — see import comment above. */}
+    {/* {lp.page_type === 'lp' && <AbTestPanel lpId={lp.id} client:load />} */}
+
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+      <h2 class="text-lg font-semibold text-gray-900 mb-4">情報</h2>
+      <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
+        <dt class="text-gray-500">URL</dt>
+        <dd class="font-mono text-gray-700">/{lp.slug}</dd>
+
+        <dt class="text-gray-500">最終更新</dt>
+        <dd class="text-gray-700">{lp.updated_at}</dd>
+
+        <dt class="text-gray-500">作成日</dt>
+        <dd class="text-gray-700">{lp.created_at}</dd>
+
+        {lp.published_at && (
+          <>
+            <dt class="text-gray-500">初回公開</dt>
+            <dd class="text-gray-700">{lp.published_at}</dd>
+          </>
+        )}
+
+      </dl>
+    </div>
+  </div>
+</AdminLayout>

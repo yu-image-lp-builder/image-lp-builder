@@ -1,0 +1,338 @@
+---
+/**
+ * Public LP page (/[slug])
+ *
+ * Displays an LP by slug. Returns 404 if not found or not published.
+ */
+
+import PublicLayout from '../layouts/PublicLayout.astro';
+import LPRenderer from '../components/LPRenderer.astro';
+import CountdownBar from '../components/CountdownBar.astro';
+import ScarcityBar from '../components/ScarcityBar.astro';
+import FloatingCtaButton from '../components/FloatingCtaButton.astro';
+import PasswordGate from '../components/PasswordGate.astro';
+import { maintenanceResponse } from '../lib/maintenance';
+import { env } from 'cloudflare:workers';
+import {
+  pageQueries,
+  myLinkQueries,
+  trackingTagsQueries,
+  siteMetaQueries,
+  siteSettingsQueries,
+  sessionQueries,
+  pageViewQueries,
+  isLiveNow,
+} from '../lib/db';
+import { hashOpaque } from '../lib/session';
+import { parseContent } from '../lib/content';
+import { toAbsoluteUrl } from '../lib/url';
+import { resolveTracking } from '../lib/tracking';
+import { resolveSiteMeta } from '../lib/site-meta';
+import { buildPublicUrl, resolvePublicHost } from '../lib/canonical';
+import { computePromotionsLayout } from '../lib/promotions-layout';
+import { resolveCountdown } from '../lib/countdown';
+import {
+  expectedCookieValue,
+  hashPassword,
+  passwordCookieAttributes,
+  passwordCookieName,
+  readPasswordCookie,
+} from '../lib/password';
+import {
+  checkLocked,
+  clearAttempts,
+  getVisitorIp,
+  hashIp,
+  recordFailure,
+} from '../lib/password-rate-limit';
+// A/B distribution disabled — see comment further down in this file.
+// import {
+//   abCookieAttributes,
+//   abCookieName,
+//   buildCandidates,
+//   pickByBucket,
+//   pickWeighted,
+//   readAbCookie,
+// } from '../lib/ab-test';
+
+export const prerender = false;
+
+const { slug } = Astro.params;
+const db = env?.DB;
+
+if (!slug) {
+  return Astro.redirect('/404', 404);
+}
+
+// Site-wide maintenance mode short-circuits everything else.
+if (db && (await siteSettingsQueries.get(db)).maintenance_mode === 1) {
+  return maintenanceResponse();
+}
+
+const parent = db ? await pageQueries.findBySlug(db, slug) : null;
+
+// LP not found - return 404
+if (!parent) {
+  return Astro.rewrite('/404');
+}
+
+// Honour the schedule window: hide before publish_at and after
+// unpublish_at. Also covers manual unpublish via status.
+if (!isLiveNow(parent)) {
+  return Astro.rewrite('/404');
+}
+
+// Password gate: when password_hash is set on the LP, visitors
+// must POST the right password before seeing the LP. Verified
+// state lives in the _lppwd_<lpId> cookie.
+const passPath = `/${parent.slug}`;
+let needsPasswordGate = false;
+let passwordError: string | undefined;
+
+if (parent.password_hash) {
+  const kv = env?.RATE_LIMIT;
+  const ipHash = kv
+    ? await hashIp(getVisitorIp(Astro.request.headers))
+    : null;
+
+  if (Astro.request.method === 'POST') {
+    const lockState =
+      kv && ipHash ? await checkLocked(kv, parent.id, ipHash) : { locked: false };
+
+    if (lockState.locked) {
+      passwordError = lockState.message;
+    } else {
+      let submittedHash: string | null = null;
+      try {
+        const form = await Astro.request.formData();
+        const value = form.get('password');
+        if (typeof value === 'string' && value.length > 0) {
+          submittedHash = await hashPassword(value);
+        }
+      } catch {
+        // fall through to render the gate with an error
+      }
+
+      if (submittedHash && submittedHash === parent.password_hash) {
+        if (kv && ipHash) await clearAttempts(kv, parent.id, ipHash);
+        const cookieValue = await expectedCookieValue(
+          parent.id,
+          parent.password_hash
+        );
+        const cookieSecure =
+          Astro.url.hostname !== 'localhost' &&
+          Astro.url.hostname !== '127.0.0.1' &&
+          !Astro.url.hostname.endsWith('.localhost');
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: passPath,
+            'Set-Cookie': `${passwordCookieName(parent.id)}=${cookieValue}; ${passwordCookieAttributes(cookieSecure)}`,
+          },
+        });
+      }
+
+      const failState =
+        kv && ipHash
+          ? await recordFailure(kv, parent.id, ipHash)
+          : { locked: false };
+      passwordError = failState.locked
+        ? failState.message
+        : 'パスワードが違います。もう一度お試しください。';
+    }
+  }
+
+  const cookieValue = readPasswordCookie(
+    Astro.request.headers.get('cookie'),
+    parent.id
+  );
+  const expected = await expectedCookieValue(parent.id, parent.password_hash);
+  if (cookieValue !== expected) {
+    needsPasswordGate = true;
+
+    // For GET requests, surface the lock state too so a returning
+    // visitor sees the "wait" message instead of a fresh empty form.
+    if (
+      Astro.request.method !== 'POST' &&
+      kv &&
+      ipHash &&
+      !passwordError
+    ) {
+      const lockState = await checkLocked(kv, parent.id, ipHash);
+      if (lockState.locked) passwordError = lockState.message;
+    }
+  }
+}
+
+// A/B variant distribution disabled — ad platforms cover this need
+// at the campaign level. Always serve the parent. The selection /
+// cookie / dataLayer code is preserved below in case we re-enable.
+const chosenPage = parent;
+const candidates: never[] = [];
+const chosenBucket = 'control';
+const chosenLabel = 'コントロール';
+
+// const variants = db ? await pageQueries.listVariants(db, parent.id) : [];
+// const candidates = buildCandidates(parent, variants);
+// let chosenPage = parent;
+// let chosenBucket = 'control';
+// let chosenLabel = 'コントロール';
+// let setCookie = false;
+//
+// if (candidates.length > 0) {
+//   const cookieValue = readAbCookie(
+//     Astro.request.headers.get('cookie'),
+//     parent.id
+//   );
+//   const fromCookie = cookieValue ? pickByBucket(candidates, cookieValue) : null;
+//   const chosen = fromCookie ?? pickWeighted(candidates);
+//   chosenPage = chosen.page;
+//   chosenBucket = chosen.bucket;
+//   chosenLabel = chosen.label;
+//   setCookie = candidates.length > 1 && (!cookieValue || !fromCookie);
+// }
+//
+// if (setCookie) {
+//   Astro.response.headers.append(
+//     'Set-Cookie',
+//     `${abCookieName(parent.id)}=${chosenBucket}; ${abCookieAttributes()}`
+//   );
+// }
+
+// Public URL renders the published snapshot, never the working copy.
+// `live_content` is null only on rows that were never published
+// (which `findBySlug` already filters out via status='published'),
+// but we fall through to `content` defensively in case of a stale
+// row from before migration 0005.
+const content = parseContent(chosenPage.live_content ?? chosenPage.content);
+// `findBySlug` is workspace-agnostic so the public route works without
+// knowing the workspace upfront. Once we have the LP, look up MyLinks
+// inside its workspace so a CTA on this LP can only resolve links
+// from the same workspace.
+const myLinks = db ? await myLinkQueries.list(db, parent.workspace_id) : [];
+const myLinkUrls = new Map(myLinks.map((m) => [m.id, m.url]));
+const ogImageAbsolute = toAbsoluteUrl(
+  content.meta?.ogImage || content.sections[0]?.image.url,
+  Astro.url
+);
+const tracking = db
+  ? resolveTracking(await trackingTagsQueries.get(db, parent.workspace_id))
+  : undefined;
+const siteMetaRow = db
+  ? await siteMetaQueries.get(db, parent.workspace_id)
+  : null;
+const siteMeta = resolveSiteMeta(siteMetaRow);
+// Public URL drives canonical / og:url. Once the self-hoster wires a
+// custom domain, every LP advertises lp.{domain}/{slug} regardless
+// of which host the visitor arrived on — so search engines and
+// social previews consolidate on one URL.
+const publicHost = resolvePublicHost(Astro.url, siteMetaRow);
+const publicUrl = buildPublicUrl(publicHost, `/${parent.slug}`);
+// Belt-and-braces with /robots.txt: when the visitor is on
+// workers.dev *and* a custom domain is wired, force noindex even
+// if the LP is otherwise indexable. robots.txt stops fresh crawls;
+// this meta tag drops pages that have already been indexed.
+const forceWorkersDevNoindex =
+  publicHost.requestIsWorkersDev && publicHost.isCustomDomain;
+const noindex = content.meta?.noindex === true || forceWorkersDevNoindex;
+
+// Resolve the countdown's deadline for the visitor's perspective —
+// per-visitor mode needs a sticky cookie, sync mode pulls from the
+// page's unpublish_at. The renderer only ever sees a concrete ISO
+// deadline string after this step.
+const rawCountdown = content.promotions?.countdown;
+let countdown = rawCountdown;
+if (rawCountdown) {
+  const resolved = resolveCountdown(
+    rawCountdown,
+    chosenPage,
+    Astro.request.headers.get('cookie')
+  );
+  countdown = resolved.countdown;
+  if (resolved.setCookie) {
+    Astro.response.headers.append('Set-Cookie', resolved.setCookie);
+  }
+}
+
+const promotionsForLayout = countdown
+  ? { ...content.promotions, countdown }
+  : content.promotions;
+const layout = computePromotionsLayout(promotionsForLayout);
+const scarcity = content.promotions?.scarcity;
+const floatingCta = content.promotions?.floatingCta;
+
+// Visitor analytics: upsert the session and record a page_view. Best
+// effort — a D1 hiccup must never block the LP from rendering, so the
+// whole block is wrapped in try/catch and the result is discarded.
+// We only record on rendered pages (i.e. after the password gate has
+// been satisfied), so locked-out visitors don't pollute the metrics.
+const sessionId = Astro.locals.session_id;
+if (db && sessionId && !needsPasswordGate) {
+  try {
+    const headers = Astro.request.headers;
+    const [ipHash, uaHash] = await Promise.all([
+      hashOpaque(getVisitorIp(headers)),
+      hashOpaque(headers.get('user-agent')),
+    ]);
+    const params = Astro.url.searchParams;
+    await sessionQueries.upsert(
+      db,
+      sessionId,
+      parent.workspace_id,
+      ipHash,
+      uaHash
+    );
+    await pageViewQueries.create(db, {
+      sessionId,
+      pageId: parent.id,
+      workspaceId: parent.workspace_id,
+      referrer: headers.get('referer'),
+      utm: {
+        source: params.get('utm_source'),
+        medium: params.get('utm_medium'),
+        campaign: params.get('utm_campaign'),
+        content: params.get('utm_content'),
+        term: params.get('utm_term'),
+      },
+    });
+  } catch (err) {
+    console.error('page_view recording failed:', err);
+  }
+}
+---
+
+{needsPasswordGate ? (
+  <PasswordGate actionPath={passPath} errorMessage={passwordError} />
+) : (
+  <PublicLayout
+    title={content.meta?.title || parent.slug}
+    description={content.meta?.description}
+    ogpImageUrl={ogImageAbsolute}
+    maxWidth={chosenPage.max_width}
+    backgroundColor={chosenPage.background_color}
+    frameStyle={chosenPage.frame_style}
+    publicUrl={publicUrl}
+    noindex={noindex}
+    tracking={tracking}
+    siteMeta={siteMeta}
+    stickyTopHeight={layout.stickyTopHeight}
+    stickyBottomHeight={layout.stickyBottomHeight}
+    abVariant={undefined}
+  >
+    <Fragment slot="sticky">
+      {layout.showCountdown && countdown && <CountdownBar countdown={countdown} />}
+      {layout.showScarcity && scarcity && (
+        <ScarcityBar scarcity={scarcity} offset={layout.scarcityOffset} />
+      )}
+      {layout.showFloatingCta && floatingCta && (
+        <FloatingCtaButton cta={floatingCta} myLinkUrls={myLinkUrls} />
+      )}
+    </Fragment>
+    <LPRenderer
+      content={content}
+      myLinkUrls={myLinkUrls}
+      sessionId={sessionId}
+      pageId={parent.id}
+    />
+  </PublicLayout>
+)}

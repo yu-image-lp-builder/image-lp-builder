@@ -1,0 +1,787 @@
+---
+/**
+ * Admin update page (/admin/update)
+ *
+ * Standalone fallback UI: deliberately does not extend AdminLayout so
+ * the update button stays reachable even when a sidebar component or
+ * the LP list page throws. Self-hosters who hit a broken main screen
+ * can still navigate here and pull the latest release.
+ *
+ * The version probe is wrapped in try/catch — a GitHub API outage
+ * must not blank out the page, since this is the operator's escape
+ * hatch when something is already wrong.
+ *
+ * While a self-update lock is held the middleware redirects every
+ * other /admin/* page here. The page reads the lock + installation
+ * state server-side, then a small client script polls
+ * /api/admin/update/status and /api/version to drive the stage
+ * display, progress bar, and completion detection.
+ *
+ * Auth is enforced by the global middleware (every /admin/* path).
+ */
+
+import { env } from 'cloudflare:workers';
+import { checkForUpdate, CURRENT_VERSION, type VersionCheck } from '../../lib/version';
+import { roleLabel } from '../../lib/labels';
+import { readLock, type UpdateLockState } from '../../lib/update-lock';
+import { installationQueries } from '../../lib/github-install';
+
+export const prerender = false;
+
+const user = Astro.locals.user;
+const workspaceId = Astro.locals.workspace_id;
+
+let update: VersionCheck;
+try {
+  update = await checkForUpdate();
+} catch {
+  update = {
+    current: CURRENT_VERSION,
+    latest: null,
+    hasUpdate: false,
+    isCritical: false,
+    releaseUrl: null,
+    releaseName: null,
+    fetchStatus: 'network_error',
+  };
+}
+
+let lock: UpdateLockState | null = null;
+if (env?.RATE_LIMIT) {
+  try {
+    lock = await readLock(env.RATE_LIMIT, workspaceId);
+  } catch (err) {
+    console.error('readLock on /admin/update failed:', err);
+  }
+}
+
+let isInstalled = false;
+if (env?.DB) {
+  try {
+    const row = await installationQueries.get(env.DB, workspaceId);
+    isInstalled = !!row;
+  } catch (err) {
+    console.error('installation lookup on /admin/update failed:', err);
+  }
+}
+
+const installOk = Astro.url.searchParams.get('install_ok') === '1';
+const installError = Astro.url.searchParams.get('install_error');
+
+const lockInProgress = !!lock && lock.stage !== 'failed';
+const lockFailed = !!lock && lock.stage === 'failed';
+
+const bootstrap = {
+  lock: lock
+    ? {
+        stage: lock.stage,
+        startedAt: lock.startedAt,
+        fromVersion: lock.fromVersion,
+        errorMessage: lock.errorMessage ?? null,
+      }
+    : null,
+  isInstalled,
+  currentVersion: update.current,
+};
+---
+
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>アップデート | Image LP Builder</title>
+</head>
+<body>
+  <div class="update-page">
+    <header class="page-header">
+      {lockInProgress ? (
+        <span class="back-link-disabled">アップデート中はページを離れられません</span>
+      ) : (
+        <a href="/admin" class="back-link">← 管理画面に戻る</a>
+      )}
+      {user && (
+        <span class="user-info">
+          {user.email}
+          <span class={`user-role role-${user.role}`}>{roleLabel(user.role)}</span>
+        </span>
+      )}
+    </header>
+
+    <main class="content">
+      <h1>アップデート</h1>
+
+      {installOk && (
+        <div class="banner banner-success">
+          GitHub App のインストールが完了しました。「アップデートを実行」を押すと反映が始まります。
+        </div>
+      )}
+      {installError && (
+        <div class="banner banner-error">
+          インストールに失敗しました(コード: {installError})。もう一度「アップデートを実行」からやり直してください。
+        </div>
+      )}
+
+      <section class="version-card">
+        <div class="version-row">
+          <span class="version-label">現在のバージョン</span>
+          <span class="version-value" id="current-version-display">v{update.current}</span>
+        </div>
+        <div class="version-row">
+          <span class="version-label">最新のバージョン</span>
+          <span class="version-value">
+            {update.latest
+              ? `v${update.latest}`
+              : update.fetchStatus === 'no_release'
+                ? 'まだ公開されていません'
+                : '取得できませんでした'}
+          </span>
+        </div>
+      </section>
+
+      {/* In-progress / failed UI takes priority over hasUpdate / latest checks
+          because those checks are stale snapshots from the SSR phase. */}
+      {lockInProgress ? (
+        <section class="status-card status-in-progress" id="state-in-progress">
+          <h2>アップデート中です</h2>
+          <p>
+            操作はできません。しばらくお待ちください(最大 5 分程度)。
+            このページを閉じても、内部処理はそのまま進行します。
+          </p>
+
+          <ol class="stage-list" id="stage-list">
+            <li data-stage="syncing">
+              <span class="stage-marker"></span>
+              <span class="stage-label">GitHub と同期中</span>
+            </li>
+            <li data-stage="building">
+              <span class="stage-marker"></span>
+              <span class="stage-label">Cloudflare でビルド中</span>
+            </li>
+            <li data-stage="verifying">
+              <span class="stage-marker"></span>
+              <span class="stage-label">新しいバージョンを確認中</span>
+            </li>
+          </ol>
+
+          <div class="progress-wrap">
+            <div class="progress-bar" id="progress-bar"></div>
+          </div>
+          <p class="progress-note" id="progress-note">準備中…</p>
+        </section>
+      ) : lockFailed ? (
+        <section class="status-card status-error" id="state-failed">
+          <h2>アップデートに失敗しました</h2>
+          <p id="failed-message">
+            {lock?.errorMessage ?? '不明なエラーが発生しました。'}
+          </p>
+          <div class="action-area">
+            <button type="button" class="update-button" id="dismiss-failed-button">
+              閉じる
+            </button>
+          </div>
+        </section>
+      ) : update.hasUpdate ? (
+        <section class={`status-card ${update.isCritical ? 'status-critical' : 'status-normal'}`}>
+          {update.isCritical && (
+            <div class="critical-badge">🚨 重要なアップデート</div>
+          )}
+          <h2>
+            {update.isCritical
+              ? '至急のアップデートがあります'
+              : '新しいバージョンが公開されています'}
+          </h2>
+          <p>
+            {update.isCritical
+              ? 'セキュリティまたは重大な問題の修正が含まれます。可能な限り早めに適用してください。'
+              : '新機能や改善が含まれます。任意のタイミングで適用してください。'}
+          </p>
+          {update.releaseUrl && (
+            <a
+              href={update.releaseUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="release-link"
+            >
+              リリースノートを確認する →
+            </a>
+          )}
+
+          <div class="action-area">
+            <button type="button" class="update-button" id="run-update-button">
+              アップデートを実行
+            </button>
+            <p class="action-note">
+              {isInstalled
+                ? '「アップデートを実行」を押すと、GitHub と同期 → Cloudflare 再ビルド → 新版確認 を自動で行います(2〜5 分)。完了まで他の管理画面操作はできません。'
+                : '初回のみ GitHub App のインストール画面を経由します(1 クリック)。インストール後、自動でアップデートが始まります。'}
+            </p>
+          </div>
+        </section>
+      ) : update.latest ? (
+        <section class="status-card status-uptodate">
+          <h2>最新の状態です</h2>
+          <p>このサイトは最新バージョンで動作しています。</p>
+        </section>
+      ) : update.fetchStatus === 'no_release' ? (
+        <section class="status-card status-uptodate">
+          <h2>最新バージョンの情報はまだ公開されていません</h2>
+          <p>
+            このサイトは現在のバージョン(v{update.current})で動作しています。
+            開発元から新しいバージョンが公開されるとここに表示されます。
+          </p>
+        </section>
+      ) : (
+        <section class="status-card status-error">
+          <h2>バージョン情報を取得できませんでした</h2>
+          <p>
+            GitHub への接続に失敗しています。ネットワークを確認の上、
+            しばらく待ってから再読み込みしてください。
+          </p>
+        </section>
+      )}
+    </main>
+  </div>
+
+  {/* Bootstrap data for the client script. set:html keeps Astro from
+      transforming the JSON, so the embedded value is exactly what the
+      script expects. */}
+  <script
+    type="application/json"
+    id="update-bootstrap"
+    set:html={JSON.stringify(bootstrap)}
+  />
+
+  <script is:inline>
+    (function () {
+      var bootstrapEl = document.getElementById('update-bootstrap');
+      if (!bootstrapEl) return;
+      var bootstrap;
+      try {
+        bootstrap = JSON.parse(bootstrapEl.textContent || '{}');
+      } catch (e) {
+        return;
+      }
+
+      var POLL_INTERVAL_MS = 3000;
+      var TARGET_DURATION_MS = 2 * 60 * 1000;
+      var SLOW_WARN_MS = 3 * 60 * 1000;
+      var TIMEOUT_MS = 10 * 60 * 1000;
+
+      var STAGE_NOTES = {
+        syncing: 'GitHub のアップストリームから差分を取得しています…',
+        building: 'Cloudflare がビルドとデプロイを行っています(1〜3 分)…',
+        verifying: '新しいバージョンの起動を確認しています…',
+      };
+
+      function $(id) {
+        return document.getElementById(id);
+      }
+
+      function applyStage(stage) {
+        var items = document.querySelectorAll('#stage-list li');
+        var order = ['syncing', 'building', 'verifying'];
+        var idx = order.indexOf(stage);
+        items.forEach(function (li, i) {
+          li.classList.remove('stage-active', 'stage-done');
+          if (i < idx) li.classList.add('stage-done');
+          else if (i === idx) li.classList.add('stage-active');
+        });
+        var note = $('progress-note');
+        if (note) {
+          note.textContent = STAGE_NOTES[stage] || '処理中…';
+        }
+      }
+
+      function updateProgressBar(elapsedMs) {
+        var bar = $('progress-bar');
+        if (!bar) return;
+        var pct = Math.min(95, (elapsedMs / TARGET_DURATION_MS) * 95);
+        bar.style.width = pct + '%';
+        if (elapsedMs >= SLOW_WARN_MS) {
+          var note = $('progress-note');
+          if (note && !note.dataset.slowFlagged) {
+            note.dataset.slowFlagged = '1';
+            note.textContent =
+              '通常より時間がかかっています。しばらく待ってもこのまま進まない場合は、ページを再読み込みしてください。';
+          }
+        }
+      }
+
+      function showFailed(message) {
+        var inProgress = $('state-in-progress');
+        if (inProgress) inProgress.style.display = 'none';
+        var failed = $('state-failed');
+        if (failed) {
+          failed.style.display = '';
+          var msgEl = $('failed-message');
+          if (msgEl && message) msgEl.textContent = message;
+          // Wire up the dismiss button now (might not have existed at SSR).
+          var btn = $('dismiss-failed-button');
+          if (btn) btn.onclick = dismissFailed;
+        } else {
+          // SSR didn't render the failed card — refresh to pick it up.
+          window.location.reload();
+        }
+      }
+
+      function reloadWithSuccess() {
+        // Clear any banner query params before reload so the next view
+        // doesn't show the install banner indefinitely.
+        var url = new URL(window.location.href);
+        url.searchParams.delete('install_ok');
+        url.searchParams.delete('install_error');
+        url.searchParams.set('updated', '1');
+        window.location.href = url.toString();
+      }
+
+      function dismissFailed() {
+        fetch('/api/admin/update/release', { method: 'POST' })
+          .catch(function () {})
+          .then(function () {
+            window.location.href = '/admin/update';
+          });
+      }
+
+      // ---- onClick: kick off update --------------------------------
+      var runBtn = $('run-update-button');
+      if (runBtn) {
+        runBtn.addEventListener('click', function () {
+          runBtn.disabled = true;
+          runBtn.textContent = '開始しています…';
+          fetch('/api/admin/update/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+          })
+            .then(function (res) {
+              return res.json().then(function (json) {
+                return { status: res.status, json: json };
+              });
+            })
+            .then(function (resp) {
+              var data = resp.json && resp.json.data;
+              var err = resp.json && resp.json.error;
+
+              if (resp.status === 400 && err && err.details && err.details.code === 'install_required') {
+                // First-time path: bounce to install round-trip.
+                window.location.href = err.details.install_url || '/admin/update/oauth/start';
+                return;
+              }
+
+              if (resp.status === 200 && data && data.stage === 'noop') {
+                // Already up to date — nothing to deploy.
+                alert('すでに最新です。');
+                window.location.reload();
+                return;
+              }
+
+              if (resp.status === 202 && data && data.stage === 'building') {
+                // Sync landed, build is rolling. Re-render via reload
+                // so the SSR snapshot reflects the new lock state.
+                window.location.reload();
+                return;
+              }
+
+              if (resp.status === 409 && err && err.details) {
+                if (err.details.code === 'in_progress') {
+                  window.location.reload();
+                  return;
+                }
+                if (err.details.code === 'merge_conflict') {
+                  alert(
+                    'GitHub の同期で衝突が発生しました。fork を upstream に手動で合わせてから再試行してください。'
+                  );
+                  window.location.reload();
+                  return;
+                }
+              }
+
+              alert(
+                'アップデートの開始に失敗しました(' +
+                  resp.status +
+                  ')。少し待ってからもう一度お試しください。'
+              );
+              window.location.reload();
+            })
+            .catch(function (e) {
+              console.error('update run failed:', e);
+              alert('通信エラーが発生しました。再読み込みします。');
+              window.location.reload();
+            });
+        });
+      }
+
+      // ---- failed card dismiss button (rendered at SSR) ------------
+      var ssrDismiss = $('dismiss-failed-button');
+      if (ssrDismiss) ssrDismiss.onclick = dismissFailed;
+
+      // ---- polling loop (only when SSR rendered an in-progress card)
+      if (!bootstrap.lock || bootstrap.lock.stage === 'failed') return;
+
+      var startedAt = bootstrap.lock.startedAt || Date.now();
+      var fromVersion = bootstrap.lock.fromVersion || bootstrap.currentVersion;
+      applyStage(bootstrap.lock.stage);
+
+      function tick() {
+        var elapsed = Date.now() - startedAt;
+        updateProgressBar(elapsed);
+
+        if (elapsed > TIMEOUT_MS) {
+          showFailed(
+            'タイムアウトしました(10 分以上応答なし)。Cloudflare の Builds 画面を確認してください。'
+          );
+          return;
+        }
+
+        Promise.all([
+          fetch('/api/admin/update/status').then(function (r) {
+            return r.json();
+          }),
+          fetch('/api/version', { cache: 'no-store' }).then(function (r) {
+            return r.json();
+          }),
+        ])
+          .then(function (results) {
+            var statusJson = results[0];
+            var versionJson = results[1];
+
+            // Detect rollover: this Worker's /api/version flips when
+            // Cloudflare swaps in the new isolate.
+            if (
+              versionJson &&
+              versionJson.success &&
+              versionJson.data &&
+              versionJson.data.version &&
+              versionJson.data.version !== fromVersion
+            ) {
+              // Release the lock so the operator can navigate, then
+              // reload to render the post-update UI.
+              fetch('/api/admin/update/release', { method: 'POST' })
+                .catch(function () {})
+                .then(reloadWithSuccess);
+              return;
+            }
+
+            if (statusJson && statusJson.success && statusJson.data) {
+              var s = statusJson.data;
+              if (s.status === 'failed') {
+                showFailed(s.error_message);
+                return;
+              }
+              if (s.status === 'idle') {
+                // Lock disappeared without a version change — most
+                // likely a TTL timeout. Treat as failure.
+                showFailed(
+                  'アップデートが完了せずに終了しました。再度お試しください。'
+                );
+                return;
+              }
+              if (s.status === 'in_progress' && s.stage) {
+                applyStage(s.stage);
+              }
+            }
+
+            setTimeout(tick, POLL_INTERVAL_MS);
+          })
+          .catch(function (e) {
+            console.error('status poll failed:', e);
+            // Transient — retry on the next tick.
+            setTimeout(tick, POLL_INTERVAL_MS);
+          });
+      }
+
+      tick();
+    })();
+  </script>
+</body>
+</html>
+
+<style>
+  /* Standalone styles — no Tailwind / no global.css. The whole point
+     of this page is that it renders even when other CSS layers fail
+     to load. */
+  :global(body) {
+    margin: 0;
+    background: #f5f7fa;
+    color: #1a1a1a;
+    font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Kaku Gothic ProN',
+      'Noto Sans JP', sans-serif;
+  }
+
+  .update-page {
+    min-height: 100vh;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 1.5rem 1rem 4rem;
+  }
+
+  .page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #e5e7eb;
+    margin-bottom: 2rem;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  .back-link {
+    color: #4b5563;
+    text-decoration: none;
+    font-size: 0.875rem;
+  }
+
+  .back-link:hover {
+    color: #1a1a1a;
+  }
+
+  .back-link-disabled {
+    color: #9ca3af;
+    font-size: 0.875rem;
+  }
+
+  .user-info {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: #6b7280;
+    font-size: 0.8125rem;
+  }
+
+  .user-role {
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+
+  .role-owner {
+    background: #fef3c7;
+    color: #92400e;
+  }
+
+  .role-editor {
+    background: #dbeafe;
+    color: #1e40af;
+  }
+
+  h1 {
+    font-size: 1.5rem;
+    margin: 0 0 1.5rem;
+  }
+
+  h2 {
+    font-size: 1.125rem;
+    margin: 0 0 0.5rem;
+  }
+
+  p {
+    margin: 0 0 1rem;
+    line-height: 1.6;
+  }
+
+  .banner {
+    border-radius: 0.5rem;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1.25rem;
+    font-size: 0.875rem;
+  }
+
+  .banner-success {
+    background: #ecfdf5;
+    border: 1px solid #a7f3d0;
+    color: #065f46;
+  }
+
+  .banner-error {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+  }
+
+  .version-card {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .version-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+  }
+
+  .version-row + .version-row {
+    border-top: 1px solid #f3f4f6;
+  }
+
+  .version-label {
+    color: #6b7280;
+    font-size: 0.875rem;
+  }
+
+  .version-value {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-weight: 600;
+  }
+
+  .status-card {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+    padding: 1.5rem;
+  }
+
+  .status-normal {
+    border-color: #fde68a;
+    background: #fffbeb;
+  }
+
+  .status-critical {
+    border-color: #fca5a5;
+    background: #fef2f2;
+  }
+
+  .status-uptodate {
+    border-color: #bbf7d0;
+    background: #f0fdf4;
+  }
+
+  .status-error {
+    border-color: #e5e7eb;
+    background: #f9fafb;
+  }
+
+  .status-in-progress {
+    border-color: #bfdbfe;
+    background: #eff6ff;
+  }
+
+  .critical-badge {
+    display: inline-block;
+    background: #b91c1c;
+    color: #ffffff;
+    padding: 0.25rem 0.625rem;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    margin-bottom: 0.75rem;
+  }
+
+  .release-link {
+    display: inline-block;
+    color: #1e40af;
+    text-decoration: underline;
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
+  }
+
+  .release-link:hover {
+    color: #1e3a8a;
+  }
+
+  .action-area {
+    margin-top: 1.25rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid rgba(0, 0, 0, 0.06);
+  }
+
+  .update-button {
+    background: #1a1a1a;
+    color: #ffffff;
+    border: none;
+    padding: 0.625rem 1.5rem;
+    border-radius: 0.375rem;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .update-button:hover:not(:disabled) {
+    background: #374151;
+  }
+
+  .update-button:disabled {
+    background: #9ca3af;
+    cursor: not-allowed;
+  }
+
+  .action-note {
+    margin-top: 0.75rem;
+    font-size: 0.8125rem;
+    color: #6b7280;
+  }
+
+  .stage-list {
+    list-style: none;
+    margin: 1.25rem 0;
+    padding: 0;
+  }
+
+  .stage-list li {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.5rem 0;
+    color: #6b7280;
+    font-size: 0.9375rem;
+  }
+
+  .stage-marker {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border-radius: 9999px;
+    border: 2px solid #cbd5e1;
+    background: #ffffff;
+    flex-shrink: 0;
+  }
+
+  .stage-list li.stage-active {
+    color: #1d4ed8;
+    font-weight: 600;
+  }
+
+  .stage-list li.stage-active .stage-marker {
+    border-color: #1d4ed8;
+    background: #1d4ed8;
+    box-shadow: 0 0 0 4px rgba(29, 78, 216, 0.15);
+  }
+
+  .stage-list li.stage-done {
+    color: #047857;
+  }
+
+  .stage-list li.stage-done .stage-marker {
+    border-color: #047857;
+    background: #047857;
+  }
+
+  .progress-wrap {
+    margin-top: 0.5rem;
+    height: 0.5rem;
+    background: #e5e7eb;
+    border-radius: 9999px;
+    overflow: hidden;
+  }
+
+  .progress-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(to right, #3b82f6, #1d4ed8);
+    transition: width 0.5s ease;
+  }
+
+  .progress-note {
+    margin-top: 0.5rem;
+    margin-bottom: 0;
+    font-size: 0.8125rem;
+    color: #6b7280;
+  }
+</style>

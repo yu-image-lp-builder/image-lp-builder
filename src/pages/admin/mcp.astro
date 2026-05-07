@@ -1,0 +1,25 @@
+---
+/**
+ * /admin/mcp
+ *
+ * MCP (Model Context Protocol) settings page — set the access mode
+ * and issue / revoke bearer tokens used by AI clients to talk to
+ * this builder via /mcp.
+ */
+
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import McpPanel from '../../components/admin/McpPanel';
+
+export const prerender = false;
+---
+
+<AdminLayout title="MCP 連携">
+  <div class="max-w-3xl mx-auto">
+    <h1 class="text-2xl font-bold text-gray-900 mb-2">MCP 連携</h1>
+    <p class="text-sm text-gray-600 mb-6">
+      Claude / Cursor 等の AI クライアントから、この LP ビルダーを操作するための設定です。<br />AI に許可する操作の範囲(モード)と、接続用のアクセストークンをここで管理します。
+    </p>
+
+    <McpPanel client:load />
+  </div>
+</AdminLayout>

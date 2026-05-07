@@ -1,0 +1,115 @@
+---
+import LPRenderer from '../../../../components/LPRenderer.astro';
+import CountdownBar from '../../../../components/CountdownBar.astro';
+import ScarcityBar from '../../../../components/ScarcityBar.astro';
+import FloatingCtaButton from '../../../../components/FloatingCtaButton.astro';
+import { env } from 'cloudflare:workers';
+import { pageQueries, myLinkQueries } from '../../../../lib/db';
+import { parseContent } from '../../../../lib/content';
+import { toAbsoluteUrl } from '../../../../lib/url';
+import { computePromotionsLayout } from '../../../../lib/promotions-layout';
+import { resolveCountdown } from '../../../../lib/countdown';
+
+export const prerender = false;
+
+const { id } = Astro.params;
+if (typeof id !== 'string' || id.length === 0) {
+  return new Response('Not Found', { status: 404 });
+}
+
+const db = env?.DB;
+const workspaceId = Astro.locals.workspace_id;
+const lp = db ? await pageQueries.findById(db, workspaceId, id) : null;
+if (!lp) {
+  return new Response('Not Found', { status: 404 });
+}
+
+const content = parseContent(lp.content);
+const myLinks = db ? await myLinkQueries.list(db, workspaceId) : [];
+const myLinkUrls = new Map(myLinks.map((m) => [m.id, m.url]));
+
+const maxWidth = lp.max_width;
+const metaTitle = content.meta?.title || lp.slug;
+const metaDescription = content.meta?.description ?? '';
+const ogImage = toAbsoluteUrl(
+  content.meta?.ogImage || content.sections[0]?.image.url,
+  Astro.url
+);
+
+let countdown = content.promotions?.countdown;
+if (countdown) {
+  const resolved = resolveCountdown(
+    countdown,
+    lp,
+    Astro.request.headers.get('cookie')
+  );
+  countdown = resolved.countdown;
+  if (resolved.setCookie) {
+    Astro.response.headers.append('Set-Cookie', resolved.setCookie);
+  }
+}
+const promotionsForLayout = countdown
+  ? { ...content.promotions, countdown }
+  : content.promotions;
+const layout = computePromotionsLayout(promotionsForLayout);
+const scarcity = content.promotions?.scarcity;
+const floatingCta = content.promotions?.floatingCta;
+
+const bodyStyle = [
+  layout.stickyTopHeight > 0 ? `padding-top:${layout.stickyTopHeight}px;` : '',
+  layout.stickyBottomHeight > 0
+    ? `padding-bottom:${layout.stickyBottomHeight}px;`
+    : '',
+  `margin:0;background:${lp.background_color ?? '#ffffff'};`,
+].join('');
+const frameClass =
+  lp.frame_style === 'line'
+    ? 'frame-line'
+    : lp.frame_style === 'shadow'
+      ? 'frame-shadow'
+      : '';
+---
+
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{metaTitle}</title>
+  {metaDescription && <meta name="description" content={metaDescription} />}
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content={metaTitle} />
+  {metaDescription && <meta property="og:description" content={metaDescription} />}
+  {ogImage && <meta property="og:image" content={ogImage} />}
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content={metaTitle} />
+  {metaDescription && <meta name="twitter:description" content={metaDescription} />}
+  {ogImage && <meta name="twitter:image" content={ogImage} />}
+  <style>
+    .preview-container {
+      width: 100%;
+      margin: 0 auto;
+      background: #ffffff;
+    }
+    .frame-line {
+      border-left: 1px solid rgba(0, 0, 0, 0.08);
+      border-right: 1px solid rgba(0, 0, 0, 0.08);
+    }
+    .frame-shadow {
+      box-shadow: 0 0 24px rgba(0, 0, 0, 0.08);
+    }
+  </style>
+</head>
+<body style={bodyStyle}>
+  {layout.showCountdown && countdown && <CountdownBar countdown={countdown} />}
+  {layout.showScarcity && scarcity && (
+    <ScarcityBar scarcity={scarcity} offset={layout.scarcityOffset} />
+  )}
+  {layout.showFloatingCta && floatingCta && (
+    <FloatingCtaButton cta={floatingCta} myLinkUrls={myLinkUrls} />
+  )}
+  <div class:list={['preview-container', frameClass]} style={`max-width: ${maxWidth}px`}>
+    <LPRenderer content={content} myLinkUrls={myLinkUrls} />
+  </div>
+</body>
+</html>

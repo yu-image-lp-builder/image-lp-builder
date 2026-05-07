@@ -1,0 +1,59 @@
+---
+/**
+ * 404 Not Found page
+ *
+ * Astro automatically uses this when a route is not found, AND
+ * dynamic routes call Astro.rewrite('/404') here when their input
+ * (slug, token, etc.) doesn't match. Has to be SSR-rendered (not
+ * prerendered) so the rewrite target exists at runtime.
+ */
+
+export const prerender = false;
+---
+
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>404 Not Found</title>
+</head>
+<body>
+  <div class="not-found">
+    <h1>404</h1>
+    <p>ページが見つかりません</p>
+  </div>
+</body>
+</html>
+
+<style>
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Kaku Gothic ProN',
+      'Noto Sans JP', sans-serif;
+    background: #ffffff;
+    color: #1a1a1a;
+  }
+
+  .not-found {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+  }
+
+  .not-found h1 {
+    font-size: 4rem;
+    font-weight: 300;
+    margin: 0;
+    color: #4b5563;
+  }
+
+  .not-found p {
+    font-size: 1rem;
+    color: #6b7280;
+    margin: 0;
+  }
+</style>

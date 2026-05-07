@@ -1,0 +1,51 @@
+{
+  "name": "image-lp-builder",
+  "type": "module",
+  "version": "0.1.5",
+  "description": "Open-source image-based landing page builder for Cloudflare Workers",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yu-labs/image-lp-builder.git"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "generate-types": "wrangler types",
+    "deploy": "astro build && wrangler deploy"
+  },
+  "dependencies": {
+    "@astrojs/cloudflare": "^13.2.2",
+    "@astrojs/react": "^5.0.4",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@tailwindcss/vite": "^4.2.4",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "astro": "^6.1.10",
+    "browser-image-compression": "^2.0.2",
+    "jszip": "^3.10.1",
+    "modern-normalize": "^3.0.1",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "react-rnd": "^10.5.3",
+    "tailwindcss": "^4.2.4",
+    "wrangler": "^4.86.0",
+    "xss": "^1.0.15"
+  },
+  "overrides": {
+    "vite": "^7",
+    "yaml": "^2.8.3"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.9",
+    "typescript": "^5.9.3"
+  }
+}

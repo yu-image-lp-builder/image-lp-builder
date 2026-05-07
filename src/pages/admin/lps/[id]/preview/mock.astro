@@ -1,0 +1,348 @@
+---
+/**
+ * /admin/lps/:id/preview/mock
+ *
+ * Unified preview hub. Opened via window.open() from the editor's
+ * "プレビュー" button (so the operator can drag it to a second
+ * monitor, off-screen, etc.).
+ *
+ * Tabs:
+ *   📱 スマホ      — iPhone mock (with safe-area inset for notch) +
+ *                    QR code (PreviewQr island) so the user can
+ *                    scan with a real device.
+ *   🖥 デスクトップ — full-width LP at the configured max_width.
+ *
+ * The same iframe element is reused; switching tabs just changes
+ * the wrapper layout. Topbar carries an "編集に戻る" button that
+ * closes the window when opened via window.open() or otherwise
+ * navigates back to the editor.
+ */
+
+import { env } from 'cloudflare:workers';
+import { pageQueries } from '../../../../../lib/db';
+import PreviewQr from '../../../../../components/admin/PreviewQr';
+
+export const prerender = false;
+
+const { id } = Astro.params;
+if (typeof id !== 'string' || id.length === 0) {
+  return new Response('Not Found', { status: 404 });
+}
+
+const db = env?.DB;
+const workspaceId = Astro.locals.workspace_id;
+const lp = db ? await pageQueries.findById(db, workspaceId, id) : null;
+if (!lp) {
+  return new Response('Not Found', { status: 404 });
+}
+
+const previewUrl = `/admin/lps/${id}/preview`;
+const editorUrl = `/admin/lps/${id}`;
+const isPublished = lp.status === 'published';
+---
+
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>プレビュー: {lp.slug}</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    /* html / body share the dark backdrop so the area outside `body`
+       (when the viewport is taller than content) doesn't flash white. */
+    html, body {
+      background: #1f1f23;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
+      color: #e5e7eb;
+    }
+
+    /* Topbar */
+    .topbar {
+      position: sticky;
+      top: 0;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      background: rgba(20, 20, 24, 0.95);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      z-index: 10;
+      flex-wrap: wrap;
+    }
+    .back-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(255, 255, 255, 0.06);
+      color: #e5e7eb;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .back-btn:hover { background: rgba(255, 255, 255, 0.12); }
+    .label {
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+    .label strong { color: #ffffff; font-weight: 600; }
+
+    .tabs {
+      display: inline-flex;
+      gap: 2px;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 2px;
+      border-radius: 8px;
+      margin-left: auto;
+    }
+    .tab {
+      border: 0;
+      background: transparent;
+      color: #cbd5e1;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .tab[aria-selected='true'] {
+      background: #ffffff;
+      color: #111827;
+    }
+    .reload-btn {
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(255, 255, 255, 0.06);
+      color: #e5e7eb;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .reload-btn:hover { background: rgba(255, 255, 255, 0.12); }
+
+    /* Stage takes the remaining vertical space so its content can
+       center within it (otherwise the phone hugs the topbar with
+       big empty space below it). */
+    .stage {
+      padding: 12px 16px;
+      flex: 1;
+      display: flex;
+    }
+
+    /* Mobile (phone) tab — phone mock + QR side-by-side, centered
+       in the stage's free vertical area. */
+    .stage-mobile {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 32px;
+      flex-wrap: wrap;
+    }
+
+    /* Desktop tab — single wide iframe centered. */
+    .stage-desktop {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: stretch;
+    }
+
+    /* Phone mock */
+    .phone-frame {
+      position: relative;
+      width: 304px;
+      padding: 12px;
+      border-radius: 44px;
+      background: linear-gradient(155deg, #2a2a2c 0%, #1a1a1c 60%, #0a0a0c 100%);
+      box-shadow:
+        0 20px 50px rgba(0, 0, 0, 0.5),
+        inset 0 0 0 1.5px rgba(255, 255, 255, 0.08);
+    }
+    .phone-screen {
+      position: relative;
+      overflow: hidden;
+      background: #ffffff;
+      width: 280px;
+      aspect-ratio: 393 / 852;
+      border-radius: 32px;
+    }
+    .phone-island {
+      position: absolute;
+      top: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 80px;
+      height: 23px;
+      background: #000;
+      border-radius: 14px;
+      z-index: 5;
+      pointer-events: none;
+    }
+    .phone-screen iframe {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #ffffff;
+    }
+
+    /* Side buttons (decorative) */
+    .btn-left-1, .btn-left-2, .btn-right {
+      position: absolute;
+      width: 2px;
+      background: #555;
+    }
+    .btn-left-1 { left: -2px; top: 80px; height: 24px; border-radius: 2px 0 0 2px; }
+    .btn-left-2 { left: -2px; top: 115px; height: 42px; border-radius: 2px 0 0 2px; }
+    .btn-right  { right: -2px; top: 100px; height: 64px; border-radius: 0 2px 2px 0; }
+
+    /* Desktop iframe wrapper */
+    .desktop-wrap {
+      width: 100%;
+      max-width: 1100px;
+      background: #ffffff;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    }
+    .desktop-wrap iframe {
+      display: block;
+      width: 100%;
+      height: calc(100vh - 100px);
+      border: 0;
+      background: #ffffff;
+    }
+
+    /* Hidden helper. We use [hidden] at the panel level so the iframe
+       doesn't reload between tab switches — moving it via JS would
+       trigger a reload and lose scroll position. */
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <button type="button" id="back-btn" class="back-btn" title="編集画面に戻る">
+      ← 編集に戻る
+    </button>
+    <span class="label">
+      プレビュー: <strong>{lp.slug}</strong>
+    </span>
+
+    <div class="tabs" role="tablist" aria-label="プレビュー種別">
+      <button type="button" class="tab" role="tab" data-tab="mobile" aria-selected="true">
+        📱 スマホ
+      </button>
+      <button type="button" class="tab" role="tab" data-tab="desktop" aria-selected="false">
+        🖥 デスクトップ
+      </button>
+    </div>
+
+    <button type="button" id="reload-btn" class="reload-btn" title="LPを再読み込み">
+      ⟳ 再読込
+    </button>
+  </div>
+
+  <div class="stage">
+    {/* Mobile (phone mock) panel — visible by default. */}
+    <div id="panel-mobile" class="stage-mobile" role="tabpanel">
+      <div class="phone-frame">
+        <span class="btn-left-1"></span>
+        <span class="btn-left-2"></span>
+        <span class="btn-right"></span>
+        <div class="phone-screen">
+          <div class="phone-island"></div>
+          <iframe
+            id="mobile-frame"
+            src={previewUrl}
+            title="LP プレビュー(スマホ)"
+            loading="lazy"
+          ></iframe>
+        </div>
+      </div>
+      <PreviewQr
+        lpId={lp.id}
+        slug={lp.slug}
+        isPublished={isPublished}
+        client:load
+      />
+    </div>
+
+    {/* Desktop (full width) panel — hidden by default. */}
+    <div id="panel-desktop" class="stage-desktop" role="tabpanel" hidden>
+      <div class="desktop-wrap">
+        <iframe
+          id="desktop-frame"
+          src={previewUrl}
+          title="LP プレビュー(デスクトップ)"
+          loading="lazy"
+        ></iframe>
+      </div>
+    </div>
+  </div>
+
+  <script is:inline define:vars={{ editorUrl }}>
+    // Back to editor: close the popup if we were opened via window.open
+    // (window.opener is set), otherwise navigate the current tab back.
+    document.getElementById('back-btn')?.addEventListener('click', () => {
+      if (window.opener && !window.opener.closed) {
+        window.close();
+      } else {
+        window.location.href = editorUrl;
+      }
+    });
+
+    // Tab switching: toggle [hidden] on the panels and aria-selected
+    // on the tab buttons. Don't re-mount the iframes — keeps scroll
+    // position and prevents reloading when toggling.
+    const tabs = Array.from(document.querySelectorAll('.tab'));
+    const panels = {
+      mobile: document.getElementById('panel-mobile'),
+      desktop: document.getElementById('panel-desktop'),
+    };
+    tabs.forEach((tab) => {
+      tab.addEventListener('click', () => {
+        const which = tab.getAttribute('data-tab');
+        if (!which || !panels[which]) return;
+        tabs.forEach((t) => {
+          t.setAttribute(
+            'aria-selected',
+            t.getAttribute('data-tab') === which ? 'true' : 'false'
+          );
+        });
+        Object.entries(panels).forEach(([key, el]) => {
+          if (!el) return;
+          if (key === which) {
+            el.removeAttribute('hidden');
+          } else {
+            el.setAttribute('hidden', '');
+          }
+        });
+      });
+    });
+
+    // Reload reloads whichever frame is currently visible.
+    document.getElementById('reload-btn')?.addEventListener('click', () => {
+      const visiblePanel = Object.values(panels).find(
+        (p) => p && !p.hasAttribute('hidden')
+      );
+      const frame = visiblePanel?.querySelector('iframe');
+      if (frame instanceof HTMLIFrameElement && frame.contentWindow) {
+        frame.contentWindow.location.reload();
+      }
+    });
+  </script>
+</body>
+</html>

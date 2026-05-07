@@ -1,0 +1,51 @@
+---
+/**
+ * /go/:shortPath
+ *
+ * Public redirect endpoint for UTM short links. Looks up the
+ * utm_links row, finds the parent LP's slug, and 302-redirects
+ * to /<slug>?utm_source=...&utm_medium=... so analytics tools
+ * see the visit attributed to the right channel.
+ *
+ * Auth-free (any visitor can use these — that's the point).
+ * Stops working as soon as the row is deleted or the parent LP
+ * is removed (FK cascades).
+ */
+
+import { env } from 'cloudflare:workers';
+import { utmLinkQueries, pageQueries } from '../../lib/db';
+
+export const prerender = false;
+
+const { shortPath } = Astro.params;
+if (typeof shortPath !== 'string' || shortPath.length === 0) {
+  return Astro.rewrite('/404');
+}
+
+const db = env?.DB;
+if (!db) return new Response('Service Unavailable', { status: 503 });
+
+const link = await utmLinkQueries.findByShortPath(db, shortPath);
+if (!link || !link.page_id) {
+  return Astro.rewrite('/404');
+}
+
+// Use the workspace stored on the utm_links row — short paths are
+// globally unique, but the LP they point at lives inside one workspace.
+const lp = await pageQueries.findById(db, link.workspace_id, link.page_id);
+if (!lp || lp.status === 'trash') {
+  return Astro.rewrite('/404');
+}
+
+// Build /<slug>?utm_source=...&...
+const params = new URLSearchParams();
+if (link.utm_source) params.set('utm_source', link.utm_source);
+if (link.utm_medium) params.set('utm_medium', link.utm_medium);
+if (link.utm_campaign) params.set('utm_campaign', link.utm_campaign);
+if (link.utm_content) params.set('utm_content', link.utm_content);
+if (link.utm_term) params.set('utm_term', link.utm_term);
+
+const target = `/${lp.slug}${params.toString() ? `?${params.toString()}` : ''}`;
+
+return Astro.redirect(target, 302);
+---
