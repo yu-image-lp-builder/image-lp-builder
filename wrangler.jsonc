@@ -1,73 +1,39 @@
 {
-	"compatibility_date": "2026-04-30",
-	// `nodejs_compat` lets the self-update flow run JSZip — its
-	// `readable-stream` dependency does `import 'stream'`, which the
-	// Workers runtime only resolves when this flag is set. Without it,
-	// the customer's Worker dies with `No such module "chunks/stream"`
-	// the moment the lazy `import('jszip')` resolves.
-	"compatibility_flags": ["global_fetch_strictly_public", "nodejs_compat"],
-	"name": "image-lp-builder",
-	"main": "@astrojs/cloudflare/entrypoints/server",
-	"assets": {
-		"directory": "./dist/client",
-		"binding": "ASSETS"
-	},
-	"observability": {
-		"enabled": true
-	},
-
-	// The free `image-lp-builder.{account}.workers.dev` URL stays
-	// permanently bound to this Worker. Operators can opt to send all
-	// `workers.dev` traffic to their custom domain instead by flipping
-	// the kill switch on /admin/site-settings — that's a runtime 301 in
-	// middleware, not a deploy-time route change, so this URL keeps
-	// answering even after the switch is on (it just redirects).
-	//
-	// `workers_dev: true` is the Wrangler default, but pinning it here
-	// is defensive: a future CF default change can't quietly take the
-	// fallback URL away from operators who never wired a custom domain.
-	"workers_dev": true,
-
-	// To wire a custom domain (recommended: lp.{your-domain}), use the
-	// Cloudflare dashboard: Workers & Pages → image-lp-builder → Settings
-	// → Domains & Routes → Add Custom Domain. CF provisions DNS + TLS
-	// automatically and binds the Worker to the new hostname without
-	// touching this file.
-	//
-	// If you'd rather drive routing from wrangler instead of the
-	// dashboard, uncomment and edit the block below. `zone_name` must
-	// match a zone you own in the same Cloudflare account.
-	//
-	// "routes": [
-	// 	{ "pattern": "lp.example.com/*", "zone_name": "example.com", "custom_domain": true }
-	// ],
-
-	// D1 / R2 / KV bindings declare only the binding name. When the
-	// repo is deployed via the Deploy to Cloudflare button (or
-	// `wrangler deploy` against an account where the resource doesn't
-	// exist yet), Cloudflare auto-provisions each resource and writes
-	// the generated IDs back into the deployed Worker's config. Adding
-	// a `database_id`, `id`, or `bucket_name` here would skip the
-	// auto-provisioning path and ask Cloudflare to look up an existing
-	// resource — which fails for fresh installs. See
-	// https://developers.cloudflare.com/changelog/post/2025-10-24-automatic-resource-provisioning/
-	"vars": {
-		"OAUTH_RELAY_URL": "https://auth.yulab.me"
-	},
-
-	"d1_databases": [
-		{
-			"binding": "DB","database_id": "0ef5edb3-0dd5-41b6-b6a7-1c33222fbc92","database_name": "image-lp-builder"
-		}
-	],
-	"r2_buckets": [
-		{
-			"binding": "BUCKET","bucket_name": "image-lp-builder","preview_bucket_name": "image-lp-builder"
-		}
-	],
-	"kv_namespaces": [
-		{
-			"binding": "RATE_LIMIT","id": "1d786ee148724095b3659c2b86a47528"
-		}
-	]
+  "compatibility_date": "2026-04-30",
+  "compatibility_flags": [
+    "global_fetch_strictly_public",
+    "nodejs_compat"
+  ],
+  "name": "image-lp-builder",
+  "main": "@astrojs/cloudflare/entrypoints/server",
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "workers_dev": true,
+  "vars": {
+    "OAUTH_RELAY_URL": "https://auth.yulab.me"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_id": "0ef5edb3-0dd5-41b6-b6a7-1c33222fbc92",
+      "database_name": "image-lp-builder"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "image-lp-builder"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "RATE_LIMIT",
+      "id": "1d786ee148724095b3659c2b86a47528"
+    }
+  ]
 }
